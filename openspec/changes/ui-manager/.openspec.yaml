@@ -1,18 +1,18 @@
 name: ui-manager
 description: UI 管理器 — 四种面板类型管理、面板栈操作、缓存策略、过渡动画、加载锁定
-status: draft
+status: ready
 artifacts:
   - id: proposal
     file: proposal.md
     type: proposal
-    status: pending
+    status: done
   - id: design
     file: design.md
     type: design
-    status: pending
+    status: done
     dependsOn: [proposal]
   - id: tasks
     file: tasks.md
     type: tasks
-    status: pending
+    status: done
     dependsOn: [design]
