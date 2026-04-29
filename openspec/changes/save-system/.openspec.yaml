@@ -7,3 +7,15 @@ layer: 2
 dependencies:
   - config-manager
   - event-bus
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: design
+    file: design.md
+    status: done
+    dependsOn: [proposal]
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [design]

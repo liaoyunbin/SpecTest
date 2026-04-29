@@ -1,7 +1,15 @@
 name: input-manager
-description: 输入管理器 — Input System 封装、按键绑定、改键、手柄支持、输入缓冲
+description: 输入管理器 — Input System 封装、按键绑定、改键、手柄支持
 status: draft
 type: sub
 parent: metroidvania-with-ai
 layer: 2
 dependencies: []
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [proposal]

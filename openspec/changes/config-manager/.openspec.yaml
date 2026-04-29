@@ -1,7 +1,15 @@
 name: config-manager
-description: 配置管理器 — Luban 表加载/查询、Editor 热重载、多语言
+description: 配置管理器 — Luban 表加载/查询、Editor 热重载、9个表定义
 status: draft
 type: sub
 parent: metroidvania-with-ai
 layer: 2
 dependencies: []
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [proposal]

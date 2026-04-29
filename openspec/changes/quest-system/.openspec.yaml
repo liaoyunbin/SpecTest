@@ -9,3 +9,11 @@ dependencies:
   - config-manager
   - ui-manager
   - save-system
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [proposal]

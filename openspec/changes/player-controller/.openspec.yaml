@@ -1,5 +1,5 @@
 name: player-controller
-description: 角色控制器 — State Pattern 13状态、物理移动、跳跃/攀墙/冲刺/滑铲
+description: 角色控制器 — State Pattern 13状态、物理移动、跳跃/攀墙/冲刺/滑铲、能力系统
 status: draft
 type: sub
 parent: metroidvania-with-ai
@@ -7,3 +7,15 @@ layer: 3
 dependencies:
   - input-manager
   - event-bus
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: design
+    file: design.md
+    status: done
+    dependsOn: [proposal]
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [design]

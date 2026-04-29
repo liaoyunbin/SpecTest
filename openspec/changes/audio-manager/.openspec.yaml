@@ -6,3 +6,11 @@ parent: metroidvania-with-ai
 layer: 2
 dependencies:
   - object-pool
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [proposal]

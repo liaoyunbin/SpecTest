@@ -1,5 +1,5 @@
 name: item-system
-description: 物品系统 — 拾取检测、类型分类(消耗品/装备/能力/货币)、拾取特效
+description: 物品系统 — 拾取检测、类型分类(消耗品/装备/能力/货币)、拾取特效、投射物
 status: draft
 type: sub
 parent: metroidvania-with-ai
@@ -8,3 +8,11 @@ dependencies:
   - config-manager
   - event-bus
   - ui-manager
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [proposal]

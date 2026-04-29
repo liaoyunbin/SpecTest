@@ -8,3 +8,11 @@ dependencies:
   - ui-manager
   - event-bus
   - config-manager
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [proposal]

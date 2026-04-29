@@ -1,7 +1,19 @@
 name: event-bus
-description: 事件总线 — 全局发布/订阅、系统间解耦、事件日志
+description: 事件总线 — 全局发布/订阅、系统间解耦通信、14个预定义事件
 status: draft
 type: sub
 parent: metroidvania-with-ai
 layer: 2
 dependencies: []
+artifacts:
+  - id: proposal
+    file: proposal.md
+    status: done
+  - id: design
+    file: design.md
+    status: done
+    dependsOn: [proposal]
+  - id: tasks
+    file: tasks.md
+    status: done
+    dependsOn: [design]
