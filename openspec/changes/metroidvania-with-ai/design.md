@@ -36,6 +36,210 @@
 存档数据：Newtonsoft.Json（读写）→ [save-system](../save-system/)  
 事件通信：EventBus → [event-bus](../event-bus/)
 
+### 属性系统设计
+
+> **跨系统共享设计** — 接口和数据结构由主文档定义，具体实现逻辑见各子系统。
+> 
+> **设计决策: 枚举 + 字段混合方案**
+> - 核心固定属性 (HP/ATK/DEF...) → 命名字段（零GC，每帧伤害计算直接访问）
+> - 可扩展属性 (抗性/特殊...) → 枚举 key + 字典（灵活扩展，不改结构体）
+> - `AttrType` 枚举定义所有属性 ID，统一索引器 `this[AttrType]` 供 Buff 叠加和 Luban 对接
+
+#### 属性枚举定义
+
+```csharp
+public enum AttrType
+{
+    MaxHP,
+    MaxMP,
+    ATK,
+    DEF,
+    SPD,
+    CRI_Rate,        // 暴击率 (千分比，100 = 10%)
+    CRI_Damage,      // 暴击伤害加成 (百分比，50 = +50%)
+    // 可扩展:
+    // FireResist, PoisonResist, LifeSteal,
+}
+```
+
+#### 属性分类
+
+| 类型 | 说明 | 玩家 | 怪物 |
+|------|------|------|------|
+| 一级属性 | 基础数值 | HP/MP/ATK/DEF/SPD/CRI_Rate/CRI_Damage/EXP | HP/ATK/DEF/SPD |
+| 二级属性 | 衍生计算 | Damage(ATK-DEF)、CritChance、DamageReduction(DEF/(DEF+100)) | 同玩家 |
+
+#### 玩家属性来源链路
+
+```
+Luban TbLevel (等级基础) ──┐
+装备加成                   ├── Recalculate() → totalAttr → CombatSystem (伤害计算)
+Buff/状态修正 ─────────────┘
+```
+
+#### 怪物属性来源链路
+
+```
+Luban TbEnemy → Enemy.attr (一次性读取) → (可选 Buff) → CombatSystem
+```
+
+#### 核心接口
+
+```csharp
+public interface IAttributeProvider
+{
+    BaseAttributes GetBaseAttributes();
+}
+
+public interface IAttackable : IAttributeProvider { }
+public interface IDamageable
+{
+    void TakeDamage(int damage);
+    bool IsDead { get; }
+}
+public interface IBuffable
+{
+    void ApplyBuff(Buff buff);
+    void RemoveBuff(int buffId);
+}
+```
+
+#### BaseAttributes — 混合访问
+
+```csharp
+[Serializable]
+public class BaseAttributes
+{
+    // 核心属性 — 字段 (高频访问零GC)
+    public int maxHp, maxMp, atk, def, spd, criRate, criDamage;
+
+    // 扩展属性 — 字典 (灵活扩展)
+    public Dictionary<AttrType, int> extras = new();
+
+    // 统一索引器 — Buff叠加 / Luban对接走枚举
+    public int this[AttrType type]
+    {
+        get => type switch
+        {
+            AttrType.MaxHP      => maxHp,
+            AttrType.MaxMP      => maxMp,
+            AttrType.ATK        => atk,
+            AttrType.DEF        => def,
+            AttrType.SPD        => spd,
+            AttrType.CRI_Rate   => criRate,
+            AttrType.CRI_Damage => criDamage,
+            _ => extras.GetValueOrDefault(type, 0)
+        };
+        set
+        {
+            switch (type)
+            {
+                case AttrType.MaxHP:      maxHp = value; break;
+                case AttrType.MaxMP:      maxMp = value; break;
+                case AttrType.ATK:        atk = value; break;
+                case AttrType.DEF:        def = value; break;
+                case AttrType.SPD:        spd = value; break;
+                case AttrType.CRI_Rate:   criRate = value; break;
+                case AttrType.CRI_Damage: criDamage = value; break;
+                default: extras[type] = value; break;
+            }
+        }
+    }
+
+    // 运算符重载 — 便捷叠加
+    public static BaseAttributes operator +(BaseAttributes a, BaseAttributes b)
+    {
+        var r = new BaseAttributes();
+        r.maxHp = a.maxHp + b.maxHp;
+        r.maxMp = a.maxMp + b.maxMp;
+        r.atk   = a.atk   + b.atk;
+        r.def   = a.def   + b.def;
+        r.spd   = a.spd   + b.spd;
+        r.criRate   = a.criRate   + b.criRate;
+        r.criDamage = a.criDamage + b.criDamage;
+        foreach (var kv in a.extras)
+            r.extras[kv.Key] = kv.Value + b.extras.GetValueOrDefault(kv.Key, 0);
+        return r;
+    }
+}
+```
+
+#### PlayerAttributes — 多源叠加
+
+```csharp
+public class PlayerAttributes
+{
+    public BaseAttributes baseAttr;     // Luban 等级基础
+    public BaseAttributes equipAttr;    // 装备加成
+    public BaseAttributes buffAttr;     // Buff 修正
+    public BaseAttributes totalAttr;    // 缓存: base + equip + buff
+
+    public int currentHp, currentMp;
+    public int level, exp;
+
+    public void Recalculate()
+    {
+        totalAttr = baseAttr + equipAttr + buffAttr;
+    }
+}
+```
+
+#### 使用方式对比
+
+```csharp
+// 伤害计算 — 用字段，零GC
+int dmg = Mathf.Max(1, player.totalAttr.atk - enemy.attr.def);
+
+// Buff 叠加 — 用索引器，枚举驱动
+void ApplyPotion()
+{
+    player.buffAttr[AttrType.ATK] += 10;
+    player.buffAttr[AttrType.SPD] += 5;
+    player.Recalculate();
+}
+
+// 遍历所有属性 — Buff 系统用
+void ApplyPercentBuff(float percent)
+{
+    foreach (AttrType type in Enum.GetValues<AttrType>())
+        attrs.buffAttr[type] += (int)(attrs.baseAttr[type] * percent);
+}
+
+// Luban 对接 — 枚举 key 天然匹配
+void LoadFromLuban(TbLevel levelConfig)
+{
+    baseAttr[AttrType.MaxHP] = levelConfig.hp;
+    baseAttr[AttrType.ATK]   = levelConfig.atk;
+    // ...
+}
+```
+
+#### 伤害计算通用公式
+
+```csharp
+// 基础伤害
+int rawDamage = Max(1, ATK - DEF);
+// 暴击判定 (千分比)
+if (Random(0,1000) < CRI_Rate) rawDamage ×= (1.5 + CRI_Damage/100);
+// 对玩家额外防御减免
+if (target is Player) rawDamage ×= (1 - DEF/(DEF+100));
+```
+
+#### 属性重算触发时机
+
+| 事件 | 触发 |
+|------|------|
+| 升级 | GrowthSystem → Recalculate |
+| 装备/卸下 | GrowthSystem → Recalculate |
+| Buff施加/移除 | BuffSystem → Recalculate |
+| 使用消耗品 | GrowthSystem (仅 currentHp) |
+
+#### Luban 表
+
+**TbLevel**: level, expNeed, hp, mp, atk, def, spd  
+**TbEnemy**: id, name, hp, atk, def, spd, exp, dropTable, aiType  
+**TbSkillConfig**: id, name, type, damage(base on ATK), cooldown, windup, range  
+
 ### 场景架构
 
 Persistent Scene + Additive Scene → [scene-manager](../scene-manager/design.md)
