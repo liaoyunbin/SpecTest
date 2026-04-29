@@ -11,6 +11,21 @@ artifacts:
     type: design
     status: pending
     dependsOn: [proposal]
+  - id: core-loop
+    file: CoreLoop.md
+    type: design
+    status: done
+    dependsOn: [proposal]
+  - id: architecture
+    file: Architecture.md
+    type: design
+    status: done
+    dependsOn: [proposal, core-loop]
+  - id: design
+    file: design.md
+    type: design
+    status: pending
+    dependsOn: [proposal, core-loop]
   - id: tasks
     file: tasks.md
     type: tasks
