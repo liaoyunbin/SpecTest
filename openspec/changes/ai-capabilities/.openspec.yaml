@@ -1,0 +1,18 @@
+name: ai-capabilities
+description: AI 用途全景 — 整理 AI 在各维度的能力边界、玩法清单与协作方式
+status: draft
+artifacts:
+  - id: proposal
+    file: proposal.md
+    type: proposal
+    status: pending
+  - id: design
+    file: design.md
+    type: design
+    status: pending
+    dependsOn: [proposal]
+  - id: tasks
+    file: tasks.md
+    type: tasks
+    status: pending
+    dependsOn: [design]
