@@ -193,22 +193,22 @@
 
 | 系统 | 职责 | 主要API |
 |------|------|---------|
-| **GameManager** | 多场景加载/卸载 (Additive)；场景切换进度；场景切换时 UI 联动；玩家出生点管理；相邻场景预加载 | `LoadArea(name)`, `UnloadArea(name)`, `OnProgress` 事件 |
-| **SaveManager** | 多槽位存档 (JSON)；序列化/反序列化 (Newtonsoft.Json)；存档校验（版本号兼容）；自动存档（检查点触发）；存档加密 | `Save(slot, data)`, `Load(slot)`, `DeleteSlot(slot)` |
-| **InputManager** | 输入映射 (Input System)；按键绑定与改键；手柄支持；输入缓冲队列 | `GetAxis(name)`, `GetButtonDown(name)`, `Rebind(action)` |
-| **ConfigManager** | Luban 表数据加载；配置查询接口；Editor 模式热重载；多语言文本表 | `Tables.Instance.TbXxx.Get(id)` |
-| **EventBus** | 全局事件发布/订阅；系统间解耦通信；事件日志 (Debug模式) | `Publish(event, data)`, `Subscribe(event, handler)` |
-| **AudioManager** | BGM 播放/切换/淡入淡出；SFX 2D/3D 播放；音量分组控制 (Master/BGM/SFX)；音频对象池 | `PlayBGM(id)`, `PlaySFX(id, pos)`, `SetVolume(group)` |
-| **UIManager** | 四种面板类型管理 (Base/Normal/Dialog/Toast)；Panel + Controller 架构；面板栈操作 (Push/Pop/BringToTop)；面板缓存策略；过渡动画；加载锁定 | `OpenPanel<T>(args)`, `ClosePanel()`, `ShowToast(msg)` |
+| **GameManager** | 多场景加载/卸载 (Additive)；场景切换进度；场景切换时 UI 联动；玩家出生点管理；相邻场景预加载<br>📁 [scene-manager](../scene-manager/) | `LoadArea(name)`, `UnloadArea(name)`, `OnProgress` 事件 |
+| **SaveManager** | 多槽位存档 (JSON)；序列化/反序列化 (Newtonsoft.Json)；存档校验（版本号兼容）；自动存档（检查点触发）；存档加密<br>📁 [save-system](../save-system/) | `Save(slot, data)`, `Load(slot)`, `DeleteSlot(slot)` |
+| **InputManager** | 输入映射 (Input System)；按键绑定与改键；手柄支持；输入缓冲队列<br>📁 [input-manager](../input-manager/) | `GetAxis(name)`, `GetButtonDown(name)`, `Rebind(action)` |
+| **ConfigManager** | Luban 表数据加载；配置查询接口；Editor 模式热重载；多语言文本表<br>📁 [config-manager](../config-manager/) | `Tables.Instance.TbXxx.Get(id)` |
+| **EventBus** | 全局事件发布/订阅；系统间解耦通信；事件日志 (Debug模式)<br>📁 [event-bus](../event-bus/) | `Publish(event, data)`, `Subscribe(event, handler)` |
+| **AudioManager** | BGM 播放/切换/淡入淡出；SFX 2D/3D 播放；音量分组控制 (Master/BGM/SFX)；音频对象池<br>📁 [audio-manager](../audio-manager/) | `PlayBGM(id)`, `PlaySFX(id, pos)`, `SetVolume(group)` |
+| **UIManager** | 四种面板类型管理 (Base/Normal/Dialog/Toast)；Panel + Controller 架构；面板栈操作 (Push/Pop/BringToTop)；面板缓存策略；过渡动画；加载锁定<br>📁 [ui-manager](../ui-manager/) | `OpenPanel<T>(args)`, `ClosePanel()`, `ShowToast(msg)` |
 
 ### Layer 3 — 实体层
 
 | 系统 | 职责 | 组件构成 |
 |------|------|----------|
-| **Player** | 角色物理/移动/跳跃/攀墙/冲刺/滑铲；HP/MP/ATK 属性；动画状态机驱动；地面检测；受伤/死亡/复活 | `Rigidbody2D`, `Collider2D`, `Animator`, `SpriteRenderer` |
-| **Enemy** | 敌人属性 (HP/ATK/DEF)；行为状态机 (巡逻/追击/攻击/死亡)；视野检测；攻击判定生成；掉落物管理；Boss 多阶段。**技能系统**: Tick 驱动状态机 (EnemySkill + SkillRunner)，支持暂停/慢动作/前摇进度查询，详见 [enemy-tick-skill-system](../enemy-tick-skill-system/design.md) | `Rigidbody2D`, `Collider2D`, `Animator`, `EnemyAI`, `EnemySkill`, `SkillRunner` |
-| **NPC** | 对话树系统；商店交互；任务触发/完成；状态持久 (已对话/已交易) | `Collider2D`, `DialogueTree`, `QuestTrigger` |
-| **Item** | 拾取检测；根据 Luban ID 获取配置；类型分类 (消耗品/装备/能力/关键物品/货币)；拾取特效 | `Collider2D(Trigger)`, `ItemData`, `PickupEffect` |
+| **Player** | 角色物理/移动/跳跃/攀墙/冲刺/滑铲；HP/MP/ATK 属性；动画状态机驱动；地面检测；受伤/死亡/复活<br>📁 [player-controller](../player-controller/) | `Rigidbody2D`, `Collider2D`, `Animator`, `SpriteRenderer` |
+| **Enemy** | 敌人属性 (HP/ATK/DEF)；行为状态机 (巡逻/追击/攻击/死亡)；视野检测；攻击判定生成；掉落物管理；Boss 多阶段。**技能**: Tick 驱动 (EnemySkill+SkillRunner)，**AI**: 行为状态机<br>📁 [enemy-tick-skill-system](../enemy-tick-skill-system/) + [enemy-ai](../enemy-ai/) | `Rigidbody2D`, `Collider2D`, `Animator`, `EnemyAI`, `EnemySkill`, `SkillRunner` |
+| **NPC** | 对话树系统；商店交互；任务触发/完成；状态持久 (已对话/已交易)<br>📁 [npc-system](../npc-system/) | `Collider2D`, `DialogueTree`, `QuestTrigger` |
+| **Item** | 拾取检测；根据 Luban ID 获取配置；类型分类 (消耗品/装备/能力/关键物品/货币)；拾取特效<br>📁 [item-system](../item-system/) | `Collider2D(Trigger)`, `ItemData`, `PickupEffect` |
 | **Projectile** | 飞行轨迹；伤害判定；生命周期管理；对象池集成 | `Rigidbody2D`, `Collider2D`, `Trajectory` |
 | **InteractObj** | 存档点；传送门；可破坏物；开关机关；单向平台；能力门 | `Collider2D`, `InteractionLogic` |
 
@@ -216,10 +216,10 @@
 
 | 系统 | 职责 | 关键逻辑 |
 |------|------|----------|
-| **CombatSystem** | 攻击判定 (近战/远程/技能)；伤害计算 (ATK-DEF公式)；受伤反馈 (击退/闪红/无敌帧)；打击感 (顿帧/震屏)；击杀/死亡流程 | `DoDamage(attacker, target)`, `CalcDamage(atk, def)` |
-| **ExploreSystem** | 小地图实时渲染；区域探索度计算；已探索/未探索标记；传送点记录；能力门控检测；捷径解锁 | `UpdateMiniMap()`, `CheckGating(ability)` |
-| **GrowthSystem** | 经验/等级 (Luban曲线)；装备槽位装配；能力解锁条件检测；背包物品管理 (排序/分类/使用) | `AddExp(amount)`, `EquipItem(id)`, `UnlockAbility(id)` |
-| **QuestSystem** | 任务状态机 (未接/进行中/完成)；任务条件检测 (击杀/收集/到达)；任务奖励发放；任务日志 | `AcceptQuest(id)`, `CheckCondition()`, `CompleteQuest(id)` |
+| **CombatSystem** | 攻击判定 (近战/远程/技能)；伤害计算 (ATK-DEF公式)；受伤反馈 (击退/闪红/无敌帧)；打击感 (顿帧/震屏)；击杀/死亡流程<br>📁 [combat-system](../combat-system/) | `DoDamage(attacker, target)`, `CalcDamage(atk, def)` |
+| **ExploreSystem** | 小地图实时渲染；区域探索度计算；已探索/未探索标记；传送点记录；能力门控检测；捷径解锁<br>📁 [exploration-system](../exploration-system/) | `UpdateMiniMap()`, `CheckGating(ability)` |
+| **GrowthSystem** | 经验/等级 (Luban曲线)；装备槽位装配；能力解锁条件检测；背包物品管理 (排序/分类/使用)<br>📁 [growth-system](../growth-system/) | `AddExp(amount)`, `EquipItem(id)`, `UnlockAbility(id)` |
+| **QuestSystem** | 任务状态机 (未接/进行中/完成)；任务条件检测 (击杀/收集/到达)；任务奖励发放；任务日志<br>📁 [quest-system](../quest-system/) | `AcceptQuest(id)`, `CheckCondition()`, `CompleteQuest(id)` |
 | **PuzzleSystem** | 开关/机关链；时序谜题；平台移动/旋转 | `ActivateSwitch(id)`, `CheckPuzzleState()` |
 
 ### Layer 5 — 表现层

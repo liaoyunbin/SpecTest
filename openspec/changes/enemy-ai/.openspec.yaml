@@ -1,0 +1,9 @@
+name: enemy-ai
+description: 敌人 AI — 行为状态机(巡逻/追击/攻击)、视野检测、Boss 阶段控制
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 3
+dependencies:
+  - enemy-tick-skill-system
+  - event-bus

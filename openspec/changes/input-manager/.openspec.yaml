@@ -1,0 +1,7 @@
+name: input-manager
+description: 输入管理器 — Input System 封装、按键绑定、改键、手柄支持、输入缓冲
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 2
+dependencies: []

@@ -1,0 +1,12 @@
+name: combat-system
+description: 战斗系统 — 伤害计算(ATK-DEF公式)、攻击判定、受伤反馈、打击感(顿帧/震屏)、击杀流程
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 4
+dependencies:
+  - player-controller
+  - enemy-tick-skill-system
+  - enemy-ai
+  - event-bus
+  - config-manager

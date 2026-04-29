@@ -1,0 +1,10 @@
+name: scene-manager
+description: 场景管理器 — Persistent + Additive 多场景加载、场景切换、预加载
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 2
+dependencies:
+  - ui-manager
+  - config-manager
+  - audio-manager

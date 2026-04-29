@@ -1,0 +1,10 @@
+name: npc-system
+description: NPC 系统 — 对话树、商店交互、任务触发/完成
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 3
+dependencies:
+  - ui-manager
+  - config-manager
+  - event-bus

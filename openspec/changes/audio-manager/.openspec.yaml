@@ -1,0 +1,8 @@
+name: audio-manager
+description: 音频管理器 — BGM/SFX 播放、音量分组控制、音频对象池
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 2
+dependencies:
+  - object-pool

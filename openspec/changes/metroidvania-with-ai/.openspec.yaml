@@ -1,6 +1,24 @@
 name: metroidvania-with-ai
-description: 使用 AI 制作类银河城游戏 — 核心循环、系统架构、技术方案、实现任务
+description: 类银河城游戏总设计 — 核心循环、系统架构、技术方案。主 Change，所有子系统以此为入口
 status: draft
+type: master
+subChanges:
+  - ui-manager
+  - enemy-tick-skill-system
+  - scene-manager
+  - save-system
+  - input-manager
+  - event-bus
+  - audio-manager
+  - config-manager
+  - player-controller
+  - enemy-ai
+  - item-system
+  - npc-system
+  - combat-system
+  - exploration-system
+  - growth-system
+  - quest-system
 artifacts:
   - id: proposal
     file: proposal.md

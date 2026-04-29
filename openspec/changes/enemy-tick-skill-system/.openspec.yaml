@@ -1,6 +1,14 @@
 name: enemy-tick-skill-system
 description: 敌人 Tick 驱动技能系统 — 组件化技能、5阶段状态机、暂停/慢动作支持
 status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 3
+dependencies:
+  - object-pool
+  - audio-manager
+  - event-bus
+  - config-manager
 artifacts:
   - id: proposal
     file: proposal.md

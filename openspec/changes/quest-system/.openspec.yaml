@@ -1,0 +1,11 @@
+name: quest-system
+description: 任务系统 — 任务状态机(未接/进行中/完成)、条件检测、奖励发放、任务日志
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 4
+dependencies:
+  - event-bus
+  - config-manager
+  - ui-manager
+  - save-system

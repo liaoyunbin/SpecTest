@@ -1,0 +1,7 @@
+name: event-bus
+description: 事件总线 — 全局发布/订阅、系统间解耦、事件日志
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 2
+dependencies: []

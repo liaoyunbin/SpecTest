@@ -1,0 +1,9 @@
+name: save-system
+description: 存档系统 — Newtonsoft.Json 序列化、多槽位管理、版本兼容、自动存档
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 2
+dependencies:
+  - config-manager
+  - event-bus

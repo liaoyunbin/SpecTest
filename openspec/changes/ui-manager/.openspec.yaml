@@ -1,6 +1,12 @@
 name: ui-manager
 description: UI 管理器 — 四种面板类型管理、面板栈操作、缓存策略、过渡动画、加载锁定
 status: ready
+type: sub
+parent: metroidvania-with-ai
+layer: 2
+dependencies:
+  - object-pool
+  - event-bus
 artifacts:
   - id: proposal
     file: proposal.md

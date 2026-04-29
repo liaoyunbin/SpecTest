@@ -1,0 +1,7 @@
+name: config-manager
+description: 配置管理器 — Luban 表加载/查询、Editor 热重载、多语言
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 2
+dependencies: []

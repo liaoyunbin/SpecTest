@@ -1,0 +1,10 @@
+name: exploration-system
+description: 探索系统 — 小地图渲染、区域探索度、能力门控检测、捷径解锁、隐藏区域
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 4
+dependencies:
+  - ui-manager
+  - event-bus
+  - config-manager

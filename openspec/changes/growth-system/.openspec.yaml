@@ -1,0 +1,11 @@
+name: growth-system
+description: 成长系统 — 经验/等级(Luban曲线)、装备槽位、能力解锁、背包管理
+status: draft
+type: sub
+parent: metroidvania-with-ai
+layer: 4
+dependencies:
+  - ui-manager
+  - config-manager
+  - event-bus
+  - save-system

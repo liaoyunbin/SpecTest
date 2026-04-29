@@ -1,6 +1,27 @@
 # 实现任务
 
 > 任务按 Layer 依赖顺序排列，从底向上。每个任务标注 AI 可生成的比例。
+> 
+> **📁 子 Change 索引**: 每个系统对应一个独立子 Change，带有完整 proposal/design/tasks。
+
+| 子 Change | Layer | 任务 | 状态 |
+|-----------|-------|------|------|
+| [ui-manager](../ui-manager/) | 2 | UI 面板管理 | ✅ ready |
+| [enemy-tick-skill-system](../enemy-tick-skill-system/) | 3 | 敌人技能 | 📋 draft |
+| [scene-manager](../scene-manager/) | 2 | 场景管理 | ⏳ 待设计 |
+| [save-system](../save-system/) | 2 | 存档管理 | ⏳ 待设计 |
+| [input-manager](../input-manager/) | 2 | 输入管理 | ⏳ 待设计 |
+| [event-bus](../event-bus/) | 2 | 事件总线 | ⏳ 待设计 |
+| [audio-manager](../audio-manager/) | 2 | 音频管理 | ⏳ 待设计 |
+| [config-manager](../config-manager/) | 2 | 配置管理 | ⏳ 待设计 |
+| [player-controller](../player-controller/) | 3 | 角色控制 | ⏳ 待设计 |
+| [enemy-ai](../enemy-ai/) | 3 | 敌人 AI | ⏳ 待设计 |
+| [item-system](../item-system/) | 3 | 物品系统 | ⏳ 待设计 |
+| [npc-system](../npc-system/) | 3 | NPC 系统 | ⏳ 待设计 |
+| [combat-system](../combat-system/) | 4 | 战斗系统 | ⏳ 待设计 |
+| [exploration-system](../exploration-system/) | 4 | 探索系统 | ⏳ 待设计 |
+| [growth-system](../growth-system/) | 4 | 成长系统 | ⏳ 待设计 |
+| [quest-system](../quest-system/) | 4 | 任务系统 | ⏳ 待设计 |
 
 ## 第一阶段：环境搭建
 
