@@ -206,7 +206,7 @@
 | 系统 | 职责 | 组件构成 |
 |------|------|----------|
 | **Player** | 角色物理/移动/跳跃/攀墙/冲刺/滑铲；HP/MP/ATK 属性；动画状态机驱动；地面检测；受伤/死亡/复活 | `Rigidbody2D`, `Collider2D`, `Animator`, `SpriteRenderer` |
-| **Enemy** | 敌人属性 (HP/ATK/DEF)；行为状态机 (巡逻/追击/攻击/死亡)；视野检测；攻击判定生成；掉落物管理；Boss 多阶段 | `Rigidbody2D`, `Collider2D`, `Animator`, `EnemyAI` |
+| **Enemy** | 敌人属性 (HP/ATK/DEF)；行为状态机 (巡逻/追击/攻击/死亡)；视野检测；攻击判定生成；掉落物管理；Boss 多阶段。**技能系统**: Tick 驱动状态机 (EnemySkill + SkillRunner)，支持暂停/慢动作/前摇进度查询，详见 [enemy-tick-skill-system](../enemy-tick-skill-system/design.md) | `Rigidbody2D`, `Collider2D`, `Animator`, `EnemyAI`, `EnemySkill`, `SkillRunner` |
 | **NPC** | 对话树系统；商店交互；任务触发/完成；状态持久 (已对话/已交易) | `Collider2D`, `DialogueTree`, `QuestTrigger` |
 | **Item** | 拾取检测；根据 Luban ID 获取配置；类型分类 (消耗品/装备/能力/关键物品/货币)；拾取特效 | `Collider2D(Trigger)`, `ItemData`, `PickupEffect` |
 | **Projectile** | 飞行轨迹；伤害判定；生命周期管理；对象池集成 | `Rigidbody2D`, `Collider2D`, `Trajectory` |
@@ -357,7 +357,16 @@ Assets/
     │   │   └── PlayerAbility.cs
     │   ├── Enemy/
     │   │   ├── Enemy.cs
-    │   │   └── EnemyAI.cs
+    │   │   ├── EnemyAI.cs
+    │   │   ├── SkillRunner.cs
+    │   │   ├── SkillFactory.cs
+    │   │   ├── Skills/
+    │   │   │   ├── EnemySkill.cs
+    │   │   │   ├── MeleeSlashSkill.cs
+    │   │   │   ├── FireballSkill.cs
+    │   │   │   └── GroundSpikeSkill.cs
+    │   │   └── Manager/
+    │   │       └── EnemyManager.cs
     │   ├── NPC/
     │   │   └── NPC.cs
     │   └── Items/

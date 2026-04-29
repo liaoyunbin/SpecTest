@@ -21,6 +21,7 @@
 | 相机 | Cinemachine | 手写相机 | 平滑跟随、区域限制、震屏开箱即用 |
 | 事件系统 | 自研 EventBus | UnityEvent, C# event | 全局解耦，跨系统通信，轻量无依赖 |
 | 对象池 | 自研 ObjectPool | PoolManager 插件 | 轻量够用，无外部依赖，可定制 |
+| 敌人技能 | Tick 驱动状态机 | 协程 WaitForSeconds | 支持暂停/慢动作/前摇进度查询，详见 [enemy-tick-skill-system](../enemy-tick-skill-system/design.md) |
 
 ### 为什么选 Additive Scene 而不是单场景？
 
@@ -309,3 +310,4 @@ Player 死亡
 | 对象池 | 敌人 (同屏大量时) | EnemyPool 按类型预热 |
 | Tilemap Chunk | 大型 Tilemap | Unity 内置自动管理 |
 | 异步加载 | 所有资源/场景 | ResourceLoader + SceneManager.LoadSceneAsync |
+| 敌人暂停 | 屏幕外/UI打开/过场时 | EnemyManager.PauseAll() / PauseOffscreen()，详见 [enemy-tick-skill-system](../enemy-tick-skill-system/design.md) |

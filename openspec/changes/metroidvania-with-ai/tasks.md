@@ -139,11 +139,15 @@
 
 **AI 可生成**: 100%
 
-### 15. Enemy 基类 + AI
-- [ ] 实现 `Enemy` 基类 (HP/ATK/DEF/掉落)
-- [ ] 实现 `EnemyAI` 状态机 (Patrol/Chase/Attack/Death)
+### 15. Enemy 基类 + AI + 技能系统
+> **技能系统详见独立变更**: [enemy-tick-skill-system](../enemy-tick-skill-system/design.md)
+- [ ] 实现 `Enemy` 基类 (HP/ATK/DEF/掉落、暂停控制、SkillRunner 集成)
+- [ ] 实现 `EnemyAI` 状态机 (Patrol/Chase/Attack/Death、技能选择)
+- [ ] 实现 `EnemySkill` 抽象基类 (Tick 驱动、5阶段状态机)
+- [ ] 实现 `SkillRunner` 技能调度器
+- [ ] 实现 3 种示例技能 (MeleeSlash / Fireball / GroundSpike)
+- [ ] 实现 `EnemyManager` 批量暂停管理
 - [ ] 实现视野检测/追击范围
-- [ ] 实现攻击判定生成
 - [ ] 实现受伤/死亡逻辑
 - [ ] 实现掉落物生成
 
@@ -349,7 +353,7 @@
 |------|------|
 | 1-12 | 基础层 + 系统层 (必须全部完成) |
 | 13 | Player 基础移动/跳跃 (不含高级能力) |
-| 15 | 2-3 种基础敌人 |
+| 15 | 2-3 种基础敌人 (含 Tick 驱动技能系统，详见 [enemy-tick-skill-system](../enemy-tick-skill-system/design.md)) |
 | 16 | 物品拾取 |
 | 20 | 基础战斗 (近战攻击 + 伤害计算) |
 | 24 | GameHUD + MainMenu |
