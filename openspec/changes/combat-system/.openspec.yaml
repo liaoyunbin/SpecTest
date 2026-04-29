@@ -6,6 +6,7 @@ parent: metroidvania-with-ai
 layer: 4
 dependencies:
   - player-controller
+  - character-skill-system
   - enemy-tick-skill-system
   - enemy-ai
   - event-bus

@@ -1,14 +1,11 @@
-name: enemy-tick-skill-system
-description: 怪物技能 — 继承 CharacterSkill，AI驱动选择+距离条件，含3种示例技能
+name: character-skill-system
+description: 通用角色技能系统 — Tick驱动5阶段状态机、SkillRunner调度器、ISkillOwner接口，供怪物和玩家技能共享
 status: draft
 type: sub
 parent: metroidvania-with-ai
-layer: 3
+layer: 2
 dependencies:
-  - character-skill-system
-  - enemy-ai
-  - event-bus
-  - config-manager
+  - object-pool
 artifacts:
   - id: proposal
     file: proposal.md

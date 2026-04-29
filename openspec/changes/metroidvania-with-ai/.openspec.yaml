@@ -4,6 +4,7 @@ status: draft
 type: master
 subChanges:
   - ui-manager
+  - character-skill-system
   - enemy-tick-skill-system
   - scene-manager
   - save-system

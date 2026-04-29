@@ -18,8 +18,8 @@
 | 相机 | Cinemachine | (主 tasks) |
 | 事件系统 | 自研 EventBus | [event-bus](../event-bus/) |
 | 对象池 | 自研 ObjectPool | (Layer 1 基础层) |
-| 敌人技能 | Tick 驱动状态机 | [enemy-tick-skill-system](../enemy-tick-skill-system/) |
-| 角色控制 | State Pattern 13 状态 | [player-controller](../player-controller/) |
+| 敌人技能 | Tick 驱动状态机 | [character-skill-system](../character-skill-system/) (通用) + [enemy-tick-skill-system](../enemy-tick-skill-system/) (怪物) |
+| 角色控制 | State Pattern 13状态 + PlayerSkill | [player-controller](../player-controller/) |
 | 敌人 AI | State Pattern 行为树 | [enemy-ai](../enemy-ai/) |
 | 物品系统 | Item + 分类 | [item-system](../item-system/) |
 | NPC | 对话树 + 商店 | [npc-system](../npc-system/) |

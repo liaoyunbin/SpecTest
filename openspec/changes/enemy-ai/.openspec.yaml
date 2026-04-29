@@ -5,6 +5,7 @@ type: sub
 parent: metroidvania-with-ai
 layer: 3
 dependencies:
+  - character-skill-system
   - enemy-tick-skill-system
   - event-bus
 artifacts:

@@ -33,3 +33,40 @@ Idle/Run/Jump/Fall → Dash → 返回空中状态
 Fall (触墙) → WallSlide → WallJump
 Jump/Fall (再跳跃) → DoubleJump
 ```
+
+## 技能系统
+
+> **基类由 [character-skill-system](../character-skill-system/design.md) 提供** (CharacterSkill / SkillRunner)
+
+### PlayerSkill 继承层
+
+```csharp
+public class PlayerSkill : CharacterSkill
+{
+    protected new Player Owner => (Player)base.Owner;
+
+    public override bool CanUse()
+    {
+        if (!IsReady) return false;
+        if (Owner.IsDead) return false;
+        if (!Owner.AbilityManager.IsUnlocked(Config.unlockConditionId)) return false;
+        if (!Owner.Attributes.HasEnoughMp(Config.mpCost)) return false;
+        if (!Owner.Input.GetSkillButton(Config.id)) return false;
+        return OnCanUse();
+    }
+
+    public override void Activate()
+    {
+        Owner.Attributes.currentMp -= Config.mpCost;
+        base.Activate();
+    }
+
+    protected virtual bool OnCanUse() => true;
+}
+```
+
+### 3 种 PlayerSkill 实现
+
+**DashSkill**: 水平方向快速移动 + 无敌帧
+**DoubleJumpSkill**: 空中再次跳跃 (CanUse: !IsGrounded)  
+**WallSlideSkill**: 触墙下滑 (可持续技能，通过 Interrupt 结束)

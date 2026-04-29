@@ -206,7 +206,7 @@
 | 系统 | 职责 | 组件构成 |
 |------|------|----------|
 | **Player** | 角色物理/移动/跳跃/攀墙/冲刺/滑铲；HP/MP/ATK 属性；动画状态机驱动；地面检测；受伤/死亡/复活<br>📁 [player-controller](../player-controller/) | `Rigidbody2D`, `Collider2D`, `Animator`, `SpriteRenderer` |
-| **Enemy** | 敌人属性 (HP/ATK/DEF)；行为状态机 (巡逻/追击/攻击/死亡)；视野检测；攻击判定生成；掉落物管理；Boss 多阶段。**技能**: Tick 驱动 (EnemySkill+SkillRunner)，**AI**: 行为状态机<br>📁 [enemy-tick-skill-system](../enemy-tick-skill-system/) + [enemy-ai](../enemy-ai/) | `Rigidbody2D`, `Collider2D`, `Animator`, `EnemyAI`, `EnemySkill`, `SkillRunner` |
+| **Enemy** | 敌人属性 (HP/ATK/DEF)；行为状态机 (巡逻/追击/攻击/死亡)；视野检测；攻击判定生成；掉落物管理；Boss 多阶段。<br>📁 技能: [character-skill-system](../character-skill-system/) (共用基类) + [enemy-tick-skill-system](../enemy-tick-skill-system/) (怪物技能) + [enemy-ai](../enemy-ai/) (AI) | `Rigidbody2D`, `Collider2D`, `Animator`, `EnemyAI`, `CharacterSkill`, `SkillRunner` |
 | **NPC** | 对话树系统；商店交互；任务触发/完成；状态持久 (已对话/已交易)<br>📁 [npc-system](../npc-system/) | `Collider2D`, `DialogueTree`, `QuestTrigger` |
 | **Item** | 拾取检测；根据 Luban ID 获取配置；类型分类 (消耗品/装备/能力/关键物品/货币)；拾取特效<br>📁 [item-system](../item-system/) | `Collider2D(Trigger)`, `ItemData`, `PickupEffect` |
 | **Projectile** | 飞行轨迹；伤害判定；生命周期管理；对象池集成 | `Rigidbody2D`, `Collider2D`, `Trajectory` |
@@ -330,7 +330,7 @@
 ```
 Assets/
 └── Scripts/
-    ├── Core/                    ← Layer 1: 基础层
+    ├── Core/                    ← Layer 1+2 共用
     │   ├── Singleton/
     │   │   ├── MonoSingleton.cs
     │   │   └── PersistentSingleton.cs
@@ -338,6 +338,12 @@ Assets/
     │   │   └── ObjectPool.cs
     │   ├── Resource/
     │   │   └── ResourceLoader.cs
+    │   ├── Skill/                ← 通用技能系统
+    │   │   ├── CharacterSkill.cs
+    │   │   ├── SkillPhase.cs
+    │   │   ├── SkillConfig.cs
+    │   │   ├── SkillRunner.cs
+    │   │   └── ISkillOwner.cs
     │   └── Utils/
     │       ├── Extensions.cs
     │       └── MathUtil.cs
@@ -354,11 +360,15 @@ Assets/
     │   ├── Player/
     │   │   ├── Player.cs
     │   │   ├── PlayerStateMachine.cs
-    │   │   └── PlayerAbility.cs
+    │   │   ├── PlayerAbility.cs
+    │   │   └── Skills/
+    │   │       ├── PlayerSkill.cs
+    │   │       ├── DashSkill.cs
+    │   │       ├── DoubleJumpSkill.cs
+    │   │       └── WallSlideSkill.cs
     │   ├── Enemy/
     │   │   ├── Enemy.cs
     │   │   ├── EnemyAI.cs
-    │   │   ├── SkillRunner.cs
     │   │   ├── SkillFactory.cs
     │   │   ├── Skills/
     │   │   │   ├── EnemySkill.cs

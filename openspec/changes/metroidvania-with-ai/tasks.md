@@ -9,7 +9,8 @@
 | 子 Change | Layer | 状态 | AI% |
 |-----------|-------|------|-----|
 | [ui-manager](../ui-manager/) | 2 | ✅ ready | 100% |
-| [enemy-tick-skill-system](../enemy-tick-skill-system/) | 3 | 📋 draft | 100% |
+| [character-skill-system](../character-skill-system/) | 2 | 通用技能框架 | 📋 draft | 100% |
+| [enemy-tick-skill-system](../enemy-tick-skill-system/) | 3 | 怪物技能 | 📋 draft | 100% |
 | [event-bus](../event-bus/) | 2 | 📋 draft | 100% |
 | [input-manager](../input-manager/) | 2 | 📋 draft | 70% |
 | [config-manager](../config-manager/) | 2 | 📋 draft | 60% |
@@ -118,7 +119,7 @@
 | 任务 | 内容 |
 |------|------|
 | 1-5 | 基础层 (环境 + Layer 1) |
-| 6-12 | 系统层 (EventBus → SceneManager) |
+| 6-12 | 系统层 (character-skill-system → SceneManager) |
 | 13 | Player 基础移动/跳跃 ([player-controller](../player-controller/)) |
 | 15 | 2-3 种基础敌人 ([enemy-tick-skill-system](../enemy-tick-skill-system/) + [enemy-ai](../enemy-ai/)) |
 | 16 | 物品拾取 ([item-system](../item-system/)) |
