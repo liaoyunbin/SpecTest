@@ -1,16 +1,11 @@
 name: metroidvania-with-ai
-description: 使用 AI 制作类银河城游戏 — 知识体系梳理与 AI 协作策略
+description: 使用 AI 制作类银河城游戏 — 核心循环、系统架构、技术方案、实现任务
 status: draft
 artifacts:
   - id: proposal
     file: proposal.md
     type: proposal
-    status: pending
-  - id: design
-    file: design.md
-    type: design
-    status: pending
-    dependsOn: [proposal]
+    status: done
   - id: core-loop
     file: CoreLoop.md
     type: design
@@ -24,10 +19,10 @@ artifacts:
   - id: design
     file: design.md
     type: design
-    status: pending
-    dependsOn: [proposal, core-loop]
+    status: done
+    dependsOn: [proposal, architecture]
   - id: tasks
     file: tasks.md
     type: tasks
-    status: pending
+    status: done
     dependsOn: [design]
