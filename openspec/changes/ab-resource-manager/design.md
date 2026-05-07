@@ -20,7 +20,6 @@
 
 **Non-Goals:**
 - 不实现资源加密/解密（后续版本考虑）
-- 不实现 Addressables 集成（保留原生 AB 方案，后续可升级）
 - 不实现资源预加载调度策略（在加载 API 基础上由上层模块自行控制）
 - 不实现编辑器内的可视化打包工具（使用脚本+配置表驱动）
 
@@ -40,22 +39,24 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                  ResourceManager（统一入口）               │
+│                  ResourceManager（Facade 层）              │
+│   统一入口，将请求委托给 IResourceProvider                    │
 ├─────────────────────────────────────────────────────────┤
-│  - bundleCache: Dictionary<string, BundleInfo>          │
-│  - assetCache: Dictionary<string, AssetRef>             │
-│  - assetManifest: Dictionary<string, AssetInfo>         │
+│  - _provider: IResourceProvider                         │
+│  - _assetInfoConfig: AssetInfoConfig                    │
+│  - _loadMode: LoadMode                                  │
 ├─────────────────────────────────────────────────────────┤
 │  + LoadAsset<T>(assetName): T                          │
 │  + LoadAssetAsync<T>(assetName, callback, progress)    │
 │  + ReleaseAsset(assetName)                             │
+│  + SetLoadMode(mode)                                   │
 │  + CleanupForSceneChange()                             │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**BundleInfo**：对应一个 AB 文件，记录 AB 对象引用、引用计数、加载状态、已加载资源列表。
+**IResourceProvider**：资源加载策略接口，定义了 Initialize、LoadAsset、LoadAssetAsync、ReleaseAsset、CleanupForSceneChange 等方法。
 
-**AssetRef**：对应 AB 内的单个资源，记录资源对象引用、引用计数、所属 AB 名称。
+**AssetBundleProviderBase**：AB 模式的公共抽象基类，内含双层引用计数、Bundle 缓存、依赖自动加载逻辑。LocalProvider 和 RemoteProvider 继承它。
 
 **双层引用计数**：AssetRef.refCount 跟踪单个资源使用次数，BundleInfo.refCount 为其下所有 AssetRef.refCount 之和。BundleInfo.refCount 归零时 Unload(true) 整体卸载。
 
@@ -83,6 +84,63 @@
 - 同步：适合小资源、编辑器调试、加载后立即使用的场景
 - 异步：适合大资源、场景切换带 Loading 界面、热更新下载的场景
 
+### 决策 6：可插拔加载模式 — 策略模式
+
+**选择**：将资源加载的核心能力抽象为 `IResourceProvider` 接口，不同加载模式实现为该接口的不同 Provider。`ResourceManager` 作为外观层（Facade），通过枚举或配置选择当前 Provider 并将所有请求委托给它。
+
+**架构图**：
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                  ResourceManager（Facade）                      │
+│   LoadAsset / LoadAssetAsync / ReleaseAsset                   │
+│                     │  委托给 _provider                          │
+│                     ▼                                           │
+│             IResourceProvider（策略接口）                         │
+│        ┌────────────┼────────────┬──────────────┐              │
+│        ▼            ▼            ▼              ▼              │
+│  EditorAsset     AssetBundle   AssetBundle   Resources        │
+│  Provider        LocalProvider  RemoteProvider Provider        │
+│  (AssetDatabase) (本地AB+引用计数)(远程AB+热更) (Resources.Load)  │
+│                         ▲              ▲                       │
+│                         └──────┬───────┘                       │
+│                     AssetBundleProviderBase                     │
+│                     (引用计数/缓存/依赖逻辑复用)                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**接口定义**：
+
+```csharp
+public interface IResourceProvider
+{
+    void Initialize();
+    void Cleanup();
+    T LoadAsset<T>(string assetName) where T : Object;
+    void LoadAssetAsync<T>(string name, Action<T> onComplete, Action<float> onProgress = null) where T : Object;
+    void ReleaseAsset(string assetName);
+    bool IsLoaded(string assetName);
+    void CleanupForSceneChange();
+}
+```
+
+**各 Provider 职责**：
+
+| Provider | 加载方式 | 依赖 | Release 行为 |
+|----------|----------|------|-------------|
+| `EditorAssetProvider` | `AssetDatabase.LoadAssetAtPath` | AssetInfo 配置表(path 字段) | 无操作 |
+| `AssetBundleLocalProvider` | `AssetBundle.LoadFromFile` | Manifest + AssetInfo(bundle/deps) | 引用计数 → Unload(true) |
+| `AssetBundleRemoteProvider` | 继承 LocalProvider，附加热更新下载 | 同上 + 服务器 version/files.json | 同上 |
+| `ResourcesProvider` | `Resources.Load` | AssetInfo(resourcesPath) | `Resources.UnloadAsset` |
+
+**AB 模式的公共逻辑复用**：`AssetBundleLocalProvider` 和 `AssetBundleRemoteProvider` 共用 `AssetBundleProviderBase` 抽象基类，内含双层引用计数、Bundle 缓存、依赖自动加载。子类仅需覆写 `GetBundlePath()` （本地路径 vs 先下载再返回本地路径）和 `Initialize()` （Local: 直接加载 Manifest；Remote: 先版本比对+差异下载再加载 Manifest）。
+
+**模式切换机制**：在 Editor 中通过 Inspector 枚举选择模式；真机上根据是否启用热更新自动判断（热更开启 → Remote，否则 → Local）。编译期 `#if UNITY_EDITOR` 宏允许 Editor 下测试任意模式。
+
+**替代方案**：将所有加载逻辑硬编码在同一类中，用 if-else 分支区分 —— 否决，违反开闭原则，新增加载方式需要修改核心类。
+
+**理由**：策略模式让每种加载模式独立演进，新增 Addressables 等支持只需新建一个 Provider 类，核心代码零改动。编辑器中开 AssetDatabase 秒级调试，真机自动走 AB，切换零代码。
+
 ## Risks / Trade-offs
 
 | 风险 | 影响 | 缓解措施 |
@@ -92,8 +150,11 @@
 | 异步加载并发过多导致内存峰值 | 卡顿/OOM | 限制最大并发加载数（默认 5）；支持加载优先级队列 |
 | 热更新下载失败导致资源不完整 | 游戏无法运行 | 下载后 MD5 校验；失败自动回退到包内资源；支持断点续传 |
 | 图集被打散到多个 AB 导致内存翻倍 | 内存翻倍 | 图集单独打包，其他 AB 依赖引用 |
+| 模式切换时 Provider 未清理导致资源泄漏 | 内存泄漏 / 粉色材质 | `SetLoadMode()` 内部先调用当前 Provider 的 `Cleanup()` 再切换 |
 
 ## Open Questions
 
 - 是否需要支持加载优先级队列？如果需要，优先级分为几级？
 - 热更新增量包（差分更新）是否在首版实现？
+- 是否需要支持运行时热切换 Provider（不退出游戏切换加载模式）？
+- SimulationProvider（Mock 模式用于单元测试）是否在首版实现？
