@@ -33,3 +33,21 @@
 #### Scenario: LZ4 本地加载
 - **WHEN** 打包目标平台为本地加载
 - **THEN** 系统使用 ChunkBasedCompression (LZ4) 格式打包
+
+### Requirement: Shader 变体预热
+打包流程 SHALL 维护一个 `ShaderVariantCollection`（SVC），收录所有游戏用到的 Shader 变体。SVC SHALL 在 `GraphicsSettings` 中注册，打包时 Unity 自动将 SVC 中的变体打入各 AB。
+
+#### Scenario: SVC 确保变体可用
+- **WHEN** 不同场景的 AB 使用同一 Shader 的不同 keyword 组合
+- **THEN** 所有变体均包含在 AB 中，不会出现因变体缺失导致的粉色材质
+
+#### Scenario: 缺少 SVC 时打包报警
+- **WHEN** 打包时 GraphicsSettings 中未注册 SVC 或 SVC 为空
+- **THEN** 打包脚本发出编译警告，提示可能导致 Shader 变体缺失
+
+### Requirement: 全局资源 Permanent 标记
+打包配置 SHALL 支持将指定 AB 标记为 Permanent（全局常驻）。Permanent AB 的 BundleInfo.isPermanent = true，场景切换时不会被 CleanupForSceneChange 卸载。
+
+#### Scenario: 全局 UI 图集标记为 Permanent
+- **WHEN** 打包配置中 common_ui.ab 被标记为 Permanent
+- **THEN** 该 AB 在场景切换时保留在内存中，不被卸载

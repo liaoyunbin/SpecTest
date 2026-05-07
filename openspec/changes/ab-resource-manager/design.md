@@ -22,6 +22,7 @@
 - 不实现资源加密/解密（后续版本考虑）
 - 不实现资源预加载调度策略（在加载 API 基础上由上层模块自行控制）
 - 不实现编辑器内的可视化打包工具（使用脚本+配置表驱动）
+- Shader 变体收集不自动从项目扫描，需手动维护 ShaderVariantCollection
 
 ## Decisions
 
@@ -141,6 +142,101 @@ public interface IResourceProvider
 
 **理由**：策略模式让每种加载模式独立演进，新增 Addressables 等支持只需新建一个 Provider 类，核心代码零改动。编辑器中开 AssetDatabase 秒级调试，真机自动走 AB，切换零代码。
 
+### 决策 7：Instantiate/Destroy 集成引用计数 — 解决副本资源追踪
+
+**选择**：引用计数的触发点从 LoadAsset 调用次数，改为 Instantiate/Destroy 对 AB 隐式引用的追踪。ResourceManager 暴露 `InstantiateAsset(string assetName)` 和 `DestroyAsset(GameObject instance)` 包装方法，内部自动维护 AB 引用关系。
+
+**问题**：当前设计 LoadAsset 时 refCount++，但 Instantiate 出来的副本持有 AB 中的材质/贴图/网格引用，这些是隐式的。Destroy 副本时没有 refCount--，导致引用计数无法真实反映资源使用状态。
+
+**方案**：
+
+```csharp
+// 用户层使用
+GameObject hero = ResourceManager.Instance.InstantiateAsset("Hero", parent);
+
+// 销毁时
+ResourceManager.Instance.DestroyAsset(hero);
+```
+
+**实现**：
+- `AssetInfo` 新增 `referencedBundles` 字段，记录该 Prefab 引用了哪些 AB（含依赖链）
+- `InstantiateAsset` 内部：先 LoadAsset → Instantiate → 遍历 referencedBundles，对每个 AB 的 `_instanceCount`++
+- `DestroyAsset` 内部：查找该实例对应的 AB 列表 → 各 AB 的 `_instanceCount`-- → 归零且 refCount 也为零时 Unload(true)
+- BundleInfo 新增 `_instanceCount` 字段，与 `refCount`（纯 LoadAsset 计数）解耦
+- 当 `refCount == 0 && _instanceCount == 0` 时，触发 AB 卸载
+
+**替代方案**：只在 AB 级别计数（不做实例追踪）—— 否决，因为 Instantiate 出来的副本对 AB 的引用是不可见的，这会导致生产环境随机出现粉色/消失的 bug。
+
+### 决策 8：Android StreamingAssets 兼容 — 平台感知加载路径
+
+**选择**：`GetBundlePath` / `LoadSingleBundle` 增加平台分支。Android 平台 StreamingAssets 中的 AB 使用 `UnityWebRequestAssetBundle` 加载（因为 APK 内不是文件系统），其他平台保持 `LoadFromFile`。
+
+**实现**：
+```
+#if UNITY_ANDROID && !UNITY_EDITOR
+    Android 路径：jar:file:// + Application.dataPath + "!/assets/" + bundlePath
+    使用 UnityWebRequestAssetBundle 异步读取
+    等待完成 → DownloadHandlerAssetBundle.GetContent
+#else
+    AssetBundle.LoadFromFile(path)
+#endif
+```
+
+**理由**：Android 的 StreamingAssets 被打包在 APK 内部，不是真实文件系统路径，`File.Exists` 和 `LoadFromFile` 都会失败。
+
+### 决策 9：AssetInfoConfig 自举加载 — 突破鸡生蛋问题
+
+**选择**：AssetInfoConfig 使用 `Resources.Load<AssetInfoConfig>` 加载，不放入 AB。它是一种"元配置"，必须在任何 AB 加载之前可用。AB Provider 启动时，先通过 Resources API 加载 AssetInfoConfig，再初始化 AB 系统。
+
+**理由**：如果 AssetInfoConfig 本身在某个 AB 中，加载第一个资源时还无法知道该配置在哪个 AB，形成循环依赖。Resources 是 Unity 内置路径，绕过了 AB 系统，且 AssetInfoConfig 本身只有几 KB，对首包体积影响可忽略。
+
+### 决策 10：异步加载并发竞争防护 — AssetRef 状态机
+
+**选择**：AssetRef 引入状态机（Unloaded → Loading → Loaded → Failed），当多人同时异步加载同一资源时，第一个请求标记为 Loading，后续请求的回调加入等待队列，加载完成后统一通知。
+
+**实现**：AssetRef 加入 `List<Action<Object>> pendingCallbacks` 和 `LoadState state`。LoadAssetAsync 发现 state == Loading 时，将回调加入 pendingCallbacks 而不发起新请求。加载完成后遍历 pendingCallbacks 统一回调。
+
+**理由**：防止同一个资源被并发加载多次，导致出现多个 AssetRef 且引用计数错乱。
+
+### 决策 11：全局/场景资源区分 — BundleInfo.isPermanent
+
+**选择**：BundleInfo 新增 `isPermanent` 标记。全局 AB（common_ui、common_shader、全局音频等）标记为 isPermanent = true。`CleanupForSceneChange()` 只卸载 isPermanent = false 且引用计数归零的 AB。
+
+**配置方式**：在打包配置 JSON 中指定哪些 AB 是 Permanent。
+
+**理由**：场景切换不应卸载全局常驻的 UI 图集和 Shader，否则每个场景都要重新加载，导致卡顿和不必要的内存波动。
+
+### 决策 12：资源降级 — fallbackAssetName
+
+**选择**：AssetInfo 新增 `fallbackAssetName` 字段，加载失败时自动尝试加载降级资源。
+
+**实现**：LoadAsset 失败后，若 fallbackAssetName 不为空，递归调用 LoadAsset(fallbackAssetName)。二级降级也失败则返回 null 并记录错误。
+
+**典型降级链**：Hero_Skin_02 → Hero_Default → null
+
+**理由**：真实项目线上环境无法保证所有资源都正确下载/存在，降级机制保证游戏基本可用性（而不是穿模/白模/粉色）。
+
+### 决策 13：Shader 变体预处理 — ShaderVariantCollection
+
+**选择**：打包流程中 SHALL 创建并维护 `ShaderVariantCollection`（SVC），收录所有游戏用到的 Shader 变体。在 `GraphicsSettings` 中注册 SVC，Unity 打包 AB 时会自动将 SVC 中的变体打入 AB。
+
+**不在 ResourceManager 代码层面处理**，但在打包配置中强制要求 SVC 存在且覆盖所有已知变体组合。
+
+**理由**：AB 打包只包含已编译的 Shader 变体。不同场景的 AB 可能用到不同的变体组合，默认不会互相包含。缺失变体 = 粉色材质。
+
+### 决策 14：可观测性/诊断系统 — Debug UI + 统计
+
+**选择**：BundleInfo 和 AssetRef 内置加载耗时、加载时间戳等统计字段。通过编译宏 `RESOURCE_DEBUG` 控制诊断代码是否编译。
+
+**提供接口**：
+- `GetLoadedBundles()` → 返回所有已加载 AB 名称 + 大小 + 引用数
+- `GetLoadedAssets()` → 返回所有已缓存资源名称 + 类型 + 引用数  
+- `GetMemorySummary()` → 总 AB 内存占用
+
+**Debug UI**：IMGUI 面板（仅在 `#if RESOURCE_DEBUG` 下编译），树形展示 AB → Asset 层级，实时更新引用计数和内存占用。
+
+**理由**：没有可观测性的资源系统是黑盒。线上问题时无法定位"哪个 AB 没卸载"、"内存为什么涨"。
+
 ## Risks / Trade-offs
 
 | 风险 | 影响 | 缓解措施 |
@@ -151,6 +247,13 @@ public interface IResourceProvider
 | 热更新下载失败导致资源不完整 | 游戏无法运行 | 下载后 MD5 校验；失败自动回退到包内资源；支持断点续传 |
 | 图集被打散到多个 AB 导致内存翻倍 | 内存翻倍 | 图集单独打包，其他 AB 依赖引用 |
 | 模式切换时 Provider 未清理导致资源泄漏 | 内存泄漏 / 粉色材质 | `SetLoadMode()` 内部先调用当前 Provider 的 `Cleanup()` 再切换 |
+| Instantiate 副本引用不可追踪 | 场景中有实例但 AB 已被卸载 → 粉色/消失 | 不直接使用 Unity 的 Instantiate/Destroy，全部通过 ResourceManager 的 `InstantiateAsset` / `DestroyAsset` 包装 |
+| Android 平台 StreamingAssets LoadFromFile 失败 | Android 加载崩溃 | 平台适配 `#if UNITY_ANDROID`，使用 UnityWebRequest 加载 APK 内 AB |
+| AssetInfoConfig 本身在 AB 中形成循环依赖 | 首次加载失败 | AssetInfoConfig 放入 Resources 文件夹，走 Resources.Load 绕过 AB 系统 |
+| 多人同时异步加载同一资源导致重复加载 | 引用计数错乱 / 内存泄漏 | AssetRef 状态机 + pendingCallbacks 等待队列 |
+| 场景切换时全局 AB 被误卸载 | 卡顿 / 不必要重加载 | BundleInfo.isPermanent 标记，CleanupForSceneChange 跳过 Permanent AB |
+| Shader 变体缺失导致粉色材质 | 粉色/效果丢失 | 打包流程必需 ShaderVariantCollection，收录所有变体 |
+| 缺乏诊断手段，问题定位困难 | 无法定位内存/性能问题 | RESOURCE_DEBUG 宏控制 Debug UI + 统计接口
 
 ## Open Questions
 
@@ -158,3 +261,5 @@ public interface IResourceProvider
 - 热更新增量包（差分更新）是否在首版实现？
 - 是否需要支持运行时热切换 Provider（不退出游戏切换加载模式）？
 - SimulationProvider（Mock 模式用于单元测试）是否在首版实现？
+- AssetInfoConfig 是否也支持 JSON 纯文本格式（无需 ScriptableObject，更灵活的启动加载）？
+- Debug UI 是否需要发布版也保留（通过隐藏手势激活）？

@@ -55,3 +55,14 @@
 #### Scenario: 网络断开时回退
 - **WHEN** 热更新下载过程中网络断开且无法恢复
 - **THEN** 系统使用 StreamingAssets 中的包内资源继续运行，不阻塞游戏启动
+
+### Requirement: Manifest 同步更新
+热更新下载时，Manifest 文件 SHALL 作为第一个被下载/更新的文件，确保后续 AB 加载时依赖关系是最新的。
+
+#### Scenario: Manifest 优先更新
+- **WHEN** 版本更新包含 hero_v2.ab（新依赖 shared_mat_v2.ab）
+- **THEN** 系统先下载更新 Manifest，再下载 hero_v2.ab 和 shared_mat_v2.ab，保证 Manifest 中的依赖信息正确
+
+#### Scenario: Manifest 版本不匹配检测
+- **WHEN** 本地 Manifest 版本与服务器版本不一致
+- **THEN** 系统将 Manifest 加入差异下载列表的首位
