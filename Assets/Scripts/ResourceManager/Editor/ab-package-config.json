@@ -1,0 +1,120 @@
+{
+  "outputPath": "Assets/StreamingAssets/AssetBundles",
+  "buildTarget": "StandaloneWindows64",
+  "compression": "chunkBasedCompression",
+  "bundles": [
+    {
+      "name": "common_ui",
+      "isPermanent": true,
+      "assets": [
+        "Assets/Prefabs/UI/CommonButton.prefab",
+        "Assets/Prefabs/UI/CommonPanel.prefab",
+        "Assets/UI/Atlases/CommonAtlas.spriteatlas"
+      ]
+    },
+    {
+      "name": "common_shader",
+      "isPermanent": true,
+      "assets": [
+        "Assets/Shaders/Common/Standard.shader",
+        "Assets/Shaders/Common/UIOverlay.shader"
+      ]
+    },
+    {
+      "name": "common_audio",
+      "isPermanent": true,
+      "assets": [
+        "Assets/Audio/BGM/MainTheme.wav",
+        "Assets/Audio/SFX/UIClick.wav",
+        "Assets/Audio/SFX/UIClose.wav"
+      ]
+    },
+    {
+      "name": "hero",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Prefabs/Characters/Hero.prefab",
+        "Assets/Models/Characters/Hero.fbx",
+        "Assets/Textures/Characters/Hero_Diffuse.png",
+        "Assets/Textures/Characters/Hero_Normal.png"
+      ]
+    },
+    {
+      "name": "hero_skin_02",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Prefabs/Characters/Hero_Skin_02.prefab",
+        "Assets/Textures/Characters/Hero_Skin_02_Diffuse.png"
+      ]
+    },
+    {
+      "name": "enemy",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Prefabs/Characters/Enemy.prefab",
+        "Assets/Models/Characters/Enemy.fbx",
+        "Assets/Textures/Characters/Enemy_Diffuse.png"
+      ]
+    },
+    {
+      "name": "battle_scene",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Scenes/BattleScene.unity",
+        "Assets/Models/Environment/BattleArena.fbx",
+        "Assets/Textures/Environment/Arena_Base.png"
+      ]
+    },
+    {
+      "name": "shop_scene",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Scenes/ShopScene.unity",
+        "Assets/Models/Environment/ShopInterior.fbx"
+      ]
+    },
+    {
+      "name": "common_mat",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Materials/Common/Default.mat",
+        "Assets/Materials/Common/UIOverlay.mat"
+      ]
+    },
+    {
+      "name": "common_tex",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Textures/Common/White.png",
+        "Assets/Textures/Common/Black.png",
+        "Assets/Textures/Common/Missing.png"
+      ]
+    },
+    {
+      "name": "sfx",
+      "isPermanent": false,
+      "assets": [
+        "Assets/Audio/SFX/Attack.wav",
+        "Assets/Audio/SFX/Hit.wav",
+        "Assets/Audio/SFX/Jump.wav",
+        "Assets/Audio/SFX/Land.wav",
+        "Assets/Audio/SFX/Pickup.wav",
+        "Assets/Audio/SFX/LevelUp.wav",
+        "Assets/Audio/SFX/Death.wav",
+        "Assets/Audio/SFX/ButtonHover.wav",
+        "Assets/Audio/SFX/ButtonClick.wav",
+        "Assets/Audio/SFX/DoorOpen.wav",
+        "Assets/Audio/SFX/DoorClose.wav",
+        "Assets/Audio/SFX/Explosion.wav",
+        "Assets/Audio/SFX/Footstep.wav",
+        "Assets/Audio/SFX/WaterSplash.wav",
+        "Assets/Audio/SFX/CoinDrop.wav",
+        "Assets/Audio/SFX/QuestComplete.wav",
+        "Assets/Audio/SFX/Alert.wav",
+        "Assets/Audio/SFX/Heal.wav",
+        "Assets/Audio/SFX/Shield.wav",
+        "Assets/Audio/SFX/Teleport.wav"
+      ]
+    }
+  ]
+}
