@@ -51,3 +51,36 @@
 #### Scenario: 全局 UI 图集标记为 Permanent
 - **WHEN** 打包配置中 common_ui.ab 被标记为 Permanent
 - **THEN** 该 AB 在场景切换时保留在内存中，不被卸载
+
+### Requirement: Android APK 不压缩 .ab 文件
+打包脚本 SHALL 在打包完成后输出配置提醒，告知开发者需在 Android 构建配置中设置 `aaptOptions { noCompress '.ab', '.json' }`，确保 StreamingAssets 中的 .ab 文件不被 APK 二次压缩。
+
+#### Scenario: 打包后输出 Android 配置提醒
+- **WHEN** AssetBundleBuilder 打包完成且目标平台包含 Android
+- **THEN** 系统在 Console 输出警告信息，提示配置 mainTemplate.gradle 的 noCompress 选项
+
+#### Scenario: 未配置 noCompress 时 Editor 内模拟警告
+- **WHEN** 在 Editor 中以 Android 平台运行且 RESOURCE_DEBUG 开启
+- **THEN** 系统检测到 .ab 文件从 APK 路径加载时输出性能警告
+
+### Requirement: Resources 双重打包检测
+打包脚本 SHALL 在分配资源到 AB 之前，扫描所有 `Resources/` 目录下的文件，与 AB 打包配置中的资源列表做交集比对。若同一资源同时存在于 Resources 和 AB 中，SHALL 输出编译错误并阻止打包。
+
+#### Scenario: 检测到双重打包
+- **WHEN** hero.prefab 同时存在于 `Assets/Resources/Hero.prefab` 和 AB 打包配置中
+- **THEN** 打包脚本输出错误日志并调用 `EditorApplication.Exit(1)` 阻止打包
+
+#### Scenario: 无双重打包正常通过
+- **WHEN** Resources 目录与 AB 配置中的资源路径无交集
+- **THEN** 打包脚本正常继续执行
+
+### Requirement: referencedBundles 自动计算
+打包脚本 SHALL 在生成 AssetInfoConfig 时，自动计算每个 Prefab 资源的 `referencedBundles` 字段（该 Prefab 及其依赖链引用的所有 AB 名称列表），无需手动配置。
+
+#### Scenario: Prefab 的 referencedBundles 自动填充
+- **WHEN** Hero.prefab 使用了 hero.ab 中的网格、common_mat.ab 中的材质、common_tex.ab 中的贴图
+- **THEN** AssetInfo 中 Hero 的 referencedBundles = ["hero", "common_mat", "common_tex"]
+
+#### Scenario: 嵌套 Prefab 的依赖链合并
+- **WHEN** Hero.prefab 内部嵌套了 Weapon.prefab（属于 weapon.ab）
+- **THEN** Hero 的 referencedBundles 包含 hero.ab 的依赖 + weapon.ab 及其依赖链

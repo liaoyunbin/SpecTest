@@ -66,3 +66,33 @@
 #### Scenario: Manifest 版本不匹配检测
 - **WHEN** 本地 Manifest 版本与服务器版本不一致
 - **THEN** 系统将 Manifest 加入差异下载列表的首位
+
+### Requirement: AssetInfoConfig 热更新
+AssetInfoConfig SHALL 支持热更新。打包时 AssetInfoConfig 同时放入 `Resources/`（包内兜底）和独立的 `asset_config.ab`（热更新用）。启动加载时优先从 `persistentDataPath/asset_config.ab` 加载，不存在则从 `Resources` 回退。
+
+#### Scenario: 热更新后使用新版 AssetInfoConfig
+- **WHEN** persistentDataPath 中存在 asset_config.ab（热更新下载的新版本）
+- **THEN** 系统从 asset_config.ab 加载 AssetInfoConfig，使用新版资源配置
+
+#### Scenario: 无热更新时使用包内 AssetInfoConfig
+- **WHEN** persistentDataPath 中不存在 asset_config.ab
+- **THEN** 系统从 Resources.Load 加载包内 AssetInfoConfig
+
+#### Scenario: asset_config.ab 参与版本比对
+- **WHEN** 服务器 files.json 中 asset_config.ab 的 MD5 与本地不一致
+- **THEN** 系统将 asset_config.ab 加入差异下载列表
+
+### Requirement: 旧 AB 文件清理
+热更新全部完成并校验通过后，系统 SHALL 以服务器 Manifest 中的 AB 列表为白名单，删除 persistentDataPath 中不在白名单内的 .ab 文件。
+
+#### Scenario: 清理旧版本 AB 文件
+- **WHEN** 热更新成功，persistentDataPath 中存在 hero_v1.ab（不在服务器 Manifest 中）
+- **THEN** 系统删除 hero_v1.ab，释放存储空间
+
+#### Scenario: 热更新失败时不执行清理
+- **WHEN** 热更新过程中出现错误导致回退到包内资源
+- **THEN** 系统不执行旧 AB 清理，保留所有现有文件
+
+#### Scenario: 白名单内的文件保留
+- **WHEN** hero.ab 在服务器 Manifest 的白名单中
+- **THEN** 系统保留 hero.ab，不删除

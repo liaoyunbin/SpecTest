@@ -2,7 +2,7 @@
 
 ## 1. 基础数据模型
 
-- [ ] 1.1 创建 `AssetInfo` 类：包含 assetName、bundleName、dependencies、assetPath、resourcesPath、assetType、fallbackAssetName、referencedBundles 字段
+- [ ] 1.1 创建 `AssetInfo` 类：包含 assetName、bundleName、dependencies、assetPath、resourcesPath、assetType、fallbackAssetName、referencedBundles、subAssets、crc 字段
 - [ ] 1.2 创建 `LoadState` 枚举：Unloaded、Loading、Loaded、Failed
 - [ ] 1.3 创建 `BundleInfo` 类：包含 bundleName、bundle、refCount、instanceCount、state、isPermanent、loadedAssets 字段
 - [ ] 1.4 创建 `AssetRef` 类：包含 assetName、asset、refCount、bundleName、state、pendingCallbacks 字段
@@ -18,6 +18,12 @@
 - [ ] 2.5 创建 `ShaderVariantCollection` 并收录所有用到的 Shader 变体
 - [ ] 2.6 打包脚本增加 SVC 校验：GraphicsSettings 中未注册 SVC 时输出编译警告
 - [ ] 2.7 将生成的 AssetInfoConfig 放入 `Resources/` 目录（自举加载用）
+- [ ] 2.8 打包脚本增加 Resources 双重打包检测：扫描 Resources/ 目录与 AB 配置做交集比对，发现重复则阻止打包
+- [ ] 2.9 打包脚本增加 referencedBundles 自动计算：遍历每个 Prefab 的依赖链，自动填充 referencedBundles 字段
+- [ ] 2.10 打包脚本增加 CRC32 计算：打包完成后遍历输出目录 .ab 文件，计算 CRC 并写入 AssetInfoConfig
+- [ ] 2.11 打包脚本增加 subAssets 自动收集：对 FBX/Texture2D 类型资源，收集其子资源名称列表
+- [ ] 2.12 打包脚本增加 asset_config.ab 独立打包：AssetInfoConfig 额外打包为一个独立 AB 用于热更新
+- [ ] 2.13 打包脚本增加 Android noCompress 提醒：目标平台含 Android 时输出 mainTemplate.gradle 配置提醒
 
 ## 3. IResourceProvider 接口
 
@@ -40,8 +46,8 @@
 
 - [ ] 5.1 创建 `AssetBundleProviderBase` 抽象类，实现 IResourceProvider
 - [ ] 5.2 实现 bundleCache / assetCache / instanceBundleMap 字典
-- [ ] 5.3 实现 `LoadAsset<T>(assetName)` 同步加载：检查缓存 → 查询依赖 → 加载 AB → 加载资源 → 失败时尝试降级 → 缓存 + 引用计数
-- [ ] 5.4 实现 `LoadAssetAsync<T>(assetName, callback, progress)` 异步加载：AssetRef 状态机 + pendingCallbacks 防并发
+- [ ] 5.3 实现 `LoadAsset<T>(assetName, subAssetName = null)` 同步加载：检查缓存 → 查询依赖 → 加载 AB → 加载资源 → 提取 SubAsset（若指定）→ 失败时尝试降级 → 缓存 + 引用计数
+- [ ] 5.4 实现 `LoadAssetAsync<T>(assetName, callback, progress, subAssetName = null)` 异步加载：AssetRef 状态机 + pendingCallbacks 防并发 + SubAsset 提取
 - [ ] 5.5 实现依赖自动加载：`LoadDependencies(bundleName)` → 从 Manifest 查询并递归加载
 - [ ] 5.6 实现双层引用计数（refCount + instanceCount）：LoadAsset 时 refCount++；InstantiateAsset 时 instanceCount++
 - [ ] 5.7 实现 `InstantiateAsset(assetName, parent)`：LoadAsset → Instantiate → 遍历 referencedBundles 按 AB instanceCount++
@@ -54,10 +60,11 @@
 ## 6. AssetBundleLocalProvider（本地 AB）
 
 - [ ] 6.1 实现 `Initialize()`：Resources.Load AssetInfoConfig → 加载 Manifest → 初始化缓存
-- [ ] 6.2 实现 `LoadSingleBundle(bundleName)`：调用 AssetBundle.LoadFromFile(GetBundlePath(bundleName))
+- [ ] 6.2 实现 `LoadSingleBundle(bundleName)`：调用 AssetBundle.LoadFromFile(path, 0, crc) 传入 CRC 校验
 - [ ] 6.3 实现 `GetBundlePath(bundleName)`：优先 persistentDataPath，其次 streamingAssetsPath
 - [ ] 6.4 实现 Android 平台适配：`#if UNITY_ANDROID && !UNITY_EDITOR` → UnityWebRequestAssetBundle 加载包内 AB
-- [ ] 6.5 实现 `Cleanup()`：遍历卸载所有 Bundle，清空缓存
+- [ ] 6.5 实现 iOS 平台适配：`#if UNITY_IOS && !UNITY_EDITOR` → streamingAssetsPath 使用 Application.dataPath + "/Raw" 路径
+- [ ] 6.6 实现 `Cleanup()`：遍历卸载所有 Bundle，清空缓存
 
 ## 7. AssetBundleRemoteProvider（远程 AB + 热更新）
 
@@ -69,9 +76,11 @@
 - [ ] 7.6 实现下载后 MD5 校验：不匹配时重试（最多 3 次）
 - [ ] 7.7 实现更新完成后持久化新版本号到 `version.json`
 - [ ] 7.8 实现更新失败回退：网络异常或下载失败时使用 StreamingAssets 资源继续运行
-- [ ] 7.9 实现 `Initialize()`：版本比对 → 差异下载 → 加载 Manifest（从 persistentDataPath）→ Resources.Load AssetInfoConfig
-- [ ] 7.10 覆写 `LoadSingleBundle(bundleName)`：本地已有 → LoadFromFile；本地无 → 下载 → LoadFromFile
+- [ ] 7.9 实现 `Initialize()`：版本比对 → 差异下载（含 asset_config.ab）→ 加载 Manifest → 加载 AssetInfoConfig（优先 persistentDataPath 的 asset_config.ab，其次 Resources）
+- [ ] 7.10 覆写 `LoadSingleBundle(bundleName)`：本地已有 → LoadFromFile + CRC；本地无 → 下载 → LoadFromFile + CRC
 - [ ] 7.11 覆写 `GetBundlePath(bundleName)`：统一返回 persistentDataPath 路径
+- [ ] 7.12 实现旧 AB 清理：热更新成功后，以服务器 Manifest 为白名单，删除 persistentDataPath 中不在白名单的 .ab 文件
+- [ ] 7.13 实现 AssetInfoConfig 双通道加载器：persistentDataPath/asset_config.ab 优先 → Resources.Load 兜底
 
 ## 8. ResourcesProvider
 
@@ -88,6 +97,7 @@
 - [ ] 9.3 Awake 时根据 LoadMode 创建对应 Provider 并调用 Initialize()
 - [ ] 9.4 真机环境自动判断：热更新开启 → RemoteProvider；否则 → LocalProvider
 - [ ] 9.5 所有公开 API 委托给 _provider：LoadAsset / LoadAssetAsync / InstantiateAsset / DestroyAsset / ReleaseAsset / CleanupForSceneChange
+- [ ] 9.6 实现对象池集成 API：`RegisterPooledInstance(GameObject, assetName)` / `UnregisterPooledInstance(GameObject)`
 
 ## 10. 配置系统
 
@@ -120,3 +130,12 @@
 - [ ] 12.12 功能测试：资源加载失败时降级到 fallbackAssetName
 - [ ] 12.13 功能测试：Android 平台 StreamingAssets 加载正常
 - [ ] 12.14 功能测试：Editor 模式下 Load/Release 未配对时输出警告
+- [ ] 12.15 功能测试：SubAsset 加载（FBX 中的 AnimationClip、SpriteAtlas 中的 Sprite）
+- [ ] 12.16 功能测试：CRC 校验失败时正确返回 null 并记录日志
+- [ ] 12.17 功能测试：iOS 平台路径处理正确（Editor 下模拟 iOS 路径逻辑）
+- [ ] 12.18 功能测试：Resources 双重打包检测正确阻止打包
+- [ ] 12.19 功能测试：AssetInfoConfig 热更新后新版配置生效
+- [ ] 12.20 功能测试：旧 AB 文件清理正确删除废弃文件、保留白名单文件
+- [ ] 12.21 功能测试：热更新失败时不执行旧 AB 清理
+- [ ] 12.22 功能测试：对象池 RegisterPooledInstance/UnregisterPooledInstance 正确追踪 instanceCount
+- [ ] 12.23 功能测试：Android noCompress 提醒在打包时正确输出

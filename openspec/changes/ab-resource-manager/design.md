@@ -237,6 +237,170 @@ ResourceManager.Instance.DestroyAsset(hero);
 
 **理由**：没有可观测性的资源系统是黑盒。线上问题时无法定位"哪个 AB 没卸载"、"内存为什么涨"。
 
+### 决策 15：Android APK 压缩标志 — StreamingAssets 不压缩 .ab 文件
+
+**选择**：打包 APK 时，通过 `build.gradle` 配置 `aaptOptions { noCompress '.ab' }` 或在 Unity Player Settings → Publishing Settings 中勾选 "Split Application Binary"，确保 StreamingAssets 中的 .ab 文件不被二次压缩。
+
+**问题**：Android APK 本质是 ZIP 包，默认会对所有文件进行压缩。如果 .ab 文件被 APK 压缩，`UnityWebRequestAssetBundle` 加载时需要先解压到内存，导致：
+- 加载耗时翻倍（解压 + 解析 AB）
+- 内存峰值翻倍（压缩数据 + 解压后数据同时存在）
+- 部分设备解压失败导致加载崩溃
+
+**实现**：
+- Unity 侧：`AssetBundleBuilder` 打包脚本输出警告，提示开发者配置 APK 不压缩 .ab
+- Gradle 侧：在主模板 `mainTemplate.gradle` 中添加 `android { aaptOptions { noCompress '.ab', '.json' } }`
+- 文档说明：在打包配置文档中明确标注此步骤为必选
+
+**替代方案**：不做任何配置，依赖 Unity 默认行为 —— 否决，因为默认压缩会导致 Android 平台加载性能严重下降。
+
+**理由**：AB 文件本身已经过 LZ4/LZMA 压缩，APK 二次压缩不仅无益（压缩率极低），反而严重损害加载性能。
+
+### 决策 16：iOS 平台路径处理 — Application.dataPath 差异
+
+**选择**：iOS 平台 StreamingAssets 路径使用 `Application.dataPath + "/Raw"` 而非通用的 `Application.streamingAssetsPath`（后者在 iOS 返回 `file://` 协议的 URL，`File.Exists` 无法识别）。
+
+**实现**：
+```csharp
+#if UNITY_IOS && !UNITY_EDITOR
+    string streamingPath = Application.dataPath + "/Raw/" + bundleName;
+#else
+    string streamingPath = Path.Combine(Application.streamingAssetsPath, bundleName);
+#endif
+```
+
+**理由**：iOS 的 `Application.streamingAssetsPath` 返回 `Application.dataPath + "/Raw"` 但带有 `file://` 前缀。`File.Exists("file:///...")` 在 iOS 上返回 false，导致路径优先级判断失效，系统误认为包内无此 AB 而报错。
+
+### 决策 17：Resources 双重打包检测 — 构建期校验
+
+**选择**：`AssetBundleBuilder` 打包脚本在分配资源到 AB 之前，扫描所有 `Resources/` 目录下的文件，与 AB 打包配置中的资源列表做交集比对。若同一资源既在 Resources 又在 AB 中，输出编译错误并阻止打包。
+
+**实现**：
+```csharp
+// AssetBundleBuilder 中
+var resourcesFiles = Directory.GetFiles(Application.dataPath + "/Resources", "*", SearchOption.AllDirectories);
+var abFiles = config.GetAllAssetPaths();
+var duplicates = resourcesFiles.Intersect(abFiles).ToList();
+if (duplicates.Any()) {
+    foreach (var dup in duplicates)
+        Debug.LogError($"资源 {dup} 同时存在于 Resources 和 AB 中，将导致包体膨胀！");
+    EditorApplication.Exit(1); // 阻止打包
+}
+```
+
+**理由**：同一资源同时存在于 Resources 和 AB 中，Unity 打包时会各存一份，导致包体膨胀。且 Resources 中的副本永远不会被使用（因为 AB 系统优先加载 AB），纯属浪费。
+
+### 决策 18：SubAsset 加载支持 — 扩展 LoadAsset API
+
+**选择**：`LoadAsset<T>` 和 `LoadAssetAsync<T>` 增加可选参数 `string subAssetName = null`。当 subAssetName 不为空时，从已加载的主 Asset 中提取子资源。
+
+**典型场景**：
+- FBX 模型中的子 AnimationClip：`LoadAsset<AnimationClip>("Hero", subAssetName: "Run")`
+- SpriteAtlas 中的子 Sprite：`LoadAsset<Sprite>("CommonAtlas", subAssetName: "icon_gold")`
+- 图集/精灵表：一个 AB 包含一个 Texture2D + 多个 Sprite
+
+**实现**：
+```csharp
+public T LoadAsset<T>(string assetName, string subAssetName = null) where T : Object
+{
+    var mainAsset = LoadMainAsset(assetName);
+    if (string.IsNullOrEmpty(subAssetName)) return mainAsset as T;
+    
+    var subAssets = AssetDatabase.LoadAllAssetRepresentationsAtPath(assetPath);
+    // 或从已加载的 AB 中：mainAsset is Texture2D → 查找对应 Sprite
+    return subAssets.FirstOrDefault(s => s.name == subAssetName) as T;
+}
+```
+
+**AssetInfo 扩展**：新增 `subAssets` 字段（`List<string>`），打包时自动收集 FBX/Texture2D 的子资源名称列表。
+
+**替代方案**：每个子资源单独打包为一个 AB —— 否决，因为 SpriteAtlas 的 Sprite 必须与 Texture 在同一个 AB 中才能正确引用。
+
+**理由**：Unity 的 AB 系统以 Asset 为单位，一个 FBX 或 SpriteAtlas 是一个主 Asset，其子资源（AnimationClip、Sprite）不能单独加载。不提供 SubAsset 支持意味着要么放弃图集合批，要么每个 Sprite 单独打包（导致 DrawCall 爆炸）。
+
+### 决策 19：AssetInfoConfig 热更新机制 — 双通道加载
+
+**选择**：AssetInfoConfig 采用"双通道"加载策略。启动时优先从 `persistentDataPath` 加载（热更新版本），若不存在则从 `Resources` 回退（包内版本）。热更新流程中，AssetInfoConfig 作为一个特殊的 AB 文件参与版本比对和下载。
+
+**实现**：
+- 打包时：AssetInfoConfig 同时放入 `Resources/`（包内兜底）和一个独立的 `asset_config.ab`（热更新用）
+- 加载时：`AssetInfoConfigLoader` 先检查 `persistentDataPath/asset_config.ab` 是否存在 → 存在则从 AB 加载 → 不存在则 `Resources.Load`
+- 热更新时：`asset_config.ab` 参与 MD5 比对，有变更时下载到 persistentDataPath
+- 版本号持久化：AssetInfoConfig 的版本号独立于资源版本号，记录在 `config_version.json`
+
+**替代方案**：AssetInfoConfig 永远只从 Resources 加载 —— 否决，因为新增资源类型或修改配置后，热更新无法感知新资源配置。
+
+**理由**：AssetInfoConfig 是资源加载的"地图"。如果地图不能热更新，新增的资源类型（如新英雄的新骨骼配置）就无法被 AB 系统识别。
+
+### 决策 20：CRC 校验 — LoadFromFile 完整性保障
+
+**选择**：`AssetBundle.LoadFromFile(path, crc)` 传入 CRC 值进行加载时完整性校验。AssetInfo 新增 `crc` 字段，打包时自动计算每个 AB 的 CRC 并写入配置表。
+
+**实现**：
+```csharp
+public AssetBundle LoadSingleBundle(string bundleName)
+{
+    var info = _assetInfoConfig.GetBundleInfo(bundleName);
+    var path = GetBundlePath(bundleName);
+    return AssetBundle.LoadFromFile(path, 0, info.crc);
+}
+```
+
+**CRC 计算**：打包脚本在 `BuildPipeline.BuildAssetBundles` 完成后，遍历输出目录的每个 .ab 文件，计算 CRC32 并写入 AssetInfoConfig。
+
+**理由**：`LoadFromFile` 不校验文件完整性。如果 AB 文件在磁盘上损坏（闪存坏块、下载不完整、文件系统错误），加载不会报错但资源内容随机错乱。CRC 校验以极低成本（每个 AB 4 字节）防止此类问题。
+
+### 决策 21：旧 AB 文件清理策略 — 基于 Manifest 的白名单
+
+**选择**：热更新完成后，以服务器 Manifest 中的 AB 列表为"白名单"，删除 persistentDataPath 中不在白名单内的 .ab 文件。
+
+**实现**：
+```csharp
+public void CleanupOldBundles()
+{
+    var validBundles = new HashSet<string>(serverManifest.GetAllBundleNames());
+    var files = Directory.GetFiles(persistentPath, "*.ab");
+    foreach (var file in files)
+    {
+        var name = Path.GetFileName(file);
+        if (!validBundles.Contains(name))
+        {
+            File.Delete(file);
+            Debug.Log($"已清理旧 AB 文件: {name}");
+        }
+    }
+}
+```
+
+**触发时机**：热更新下载全部完成并校验通过后，在 `Initialize()` 的最后阶段执行。
+
+**安全措施**：仅在热更新成功（所有文件 MD5 校验通过）后才执行清理；若热更新失败回退，不执行清理。
+
+**理由**：多次热更新后，persistentDataPath 中会积累大量旧版本 AB 文件（如 hero_v1.ab、hero_v2.ab、hero_v3.ab），占用用户存储空间。不清理的话，重度玩家可能积累数百 MB 的废弃文件。
+
+### 决策 22：对象池集成 — PoolManager 与 ResourceManager 协作
+
+**选择**：对象池中的 GameObject 同样持有 AB 引用，需要纳入引用计数追踪。提供两种集成方式：
+
+**方式一（推荐）**：对象池通过 `ResourceManager.InstantiateAsset` 创建实例，`DestroyAsset` 销毁实例。对象池的"归还"操作不调用 DestroyAsset，而是将实例设为 inactive。引用计数在对象池"真正销毁"实例时才减少。
+
+**方式二（兼容）**：对象池直接使用 Unity 的 `Instantiate` / `Destroy`，但需要手动调用 `ResourceManager.RegisterPooledInstance(go, assetName)` 和 `UnregisterPooledInstance(go)`。
+
+**实现**：
+```csharp
+// ResourceManager 新增
+public void RegisterPooledInstance(GameObject instance, string assetName)
+{
+    // 查找该 assetName 的 referencedBundles，instanceCount++
+}
+
+public void UnregisterPooledInstance(GameObject instance)
+{
+    // 查找该实例关联的 AB，instanceCount--
+}
+```
+
+**理由**：对象池中的 GameObject（如子弹、特效、UI 列表项）持有材质/网格/贴图引用，这些引用指向 AB 中的资源。如果对象池持有 100 个子弹预制体实例，但 AB 系统认为 instanceCount=0 而卸载了 AB，所有子弹会变成粉色。
+
 ## Risks / Trade-offs
 
 | 风险 | 影响 | 缓解措施 |
@@ -253,7 +417,15 @@ ResourceManager.Instance.DestroyAsset(hero);
 | 多人同时异步加载同一资源导致重复加载 | 引用计数错乱 / 内存泄漏 | AssetRef 状态机 + pendingCallbacks 等待队列 |
 | 场景切换时全局 AB 被误卸载 | 卡顿 / 不必要重加载 | BundleInfo.isPermanent 标记，CleanupForSceneChange 跳过 Permanent AB |
 | Shader 变体缺失导致粉色材质 | 粉色/效果丢失 | 打包流程必需 ShaderVariantCollection，收录所有变体 |
-| 缺乏诊断手段，问题定位困难 | 无法定位内存/性能问题 | RESOURCE_DEBUG 宏控制 Debug UI + 统计接口
+| 缺乏诊断手段，问题定位困难 | 无法定位内存/性能问题 | RESOURCE_DEBUG 宏控制 Debug UI + 统计接口 |
+| Android APK 压缩 .ab 文件导致加载性能下降 | 加载慢 / 内存峰值 / 崩溃 | build.gradle 配置 noCompress '.ab'；打包脚本输出配置提醒 |
+| iOS 路径 file:// 前缀导致 File.Exists 失败 | iOS 加载失败 | 平台宏区分 iOS 路径，使用 Application.dataPath + "/Raw" |
+| Resources 与 AB 双重打包导致包体膨胀 | 包体变大 | 打包脚本构建期检测，发现重复则阻止打包 |
+| SubAsset 无法加载导致图集/动画无法使用 | 功能缺失 | LoadAsset 增加 subAssetName 参数；AssetInfo 增加 subAssets 字段 |
+| AssetInfoConfig 无法热更新导致新资源不可识别 | 热更新后新资源加载失败 | 双通道加载：persistentDataPath 优先，Resources 兜底 |
+| AB 文件磁盘损坏导致资源错乱 | 随机显示异常 | LoadFromFile 传入 CRC 校验；下载后 MD5 校验 |
+| 旧版本 AB 文件积累占用存储空间 | 用户存储空间浪费 | 热更新成功后基于 Manifest 白名单清理旧 .ab 文件 |
+| 对象池实例持有 AB 引用但未被追踪 | 对象池对象变粉色/消失 | RegisterPooledInstance / UnregisterPooledInstance API |
 
 ## Open Questions
 
@@ -263,3 +435,5 @@ ResourceManager.Instance.DestroyAsset(hero);
 - SimulationProvider（Mock 模式用于单元测试）是否在首版实现？
 - AssetInfoConfig 是否也支持 JSON 纯文本格式（无需 ScriptableObject，更灵活的启动加载）？
 - Debug UI 是否需要发布版也保留（通过隐藏手势激活）？
+- 对象池集成方式一（InstantiateAsset/DestroyAsset）是否需要对象池框架改造？改造范围多大？
+- 旧 AB 清理是否需要保留最近 N 个版本的回退能力（而非仅保留当前版本）？

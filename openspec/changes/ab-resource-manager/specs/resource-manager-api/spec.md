@@ -111,3 +111,37 @@
 #### Scenario: Debug 面板显示加载层级
 - **WHEN** RESOURCE_DEBUG 开启且按指定快捷键
 - **THEN** 系统渲染 IMGUI 窗口，树形列出所有已加载 AB，展开 AB 显示其下资源和引用计数
+
+### Requirement: SubAsset 加载 API
+系统 SHALL 支持从主 Asset 中加载子资源（SubAsset），如 FBX 中的 AnimationClip、SpriteAtlas 中的 Sprite。`LoadAsset<T>` 和 `LoadAssetAsync<T>` SHALL 增加可选参数 `subAssetName`。
+
+#### Scenario: 加载 FBX 中的子 AnimationClip
+- **WHEN** 调用 `LoadAsset<AnimationClip>("Hero", subAssetName: "Run")`
+- **THEN** 系统加载 Hero 主 Asset，从中提取名为 "Run" 的 AnimationClip 子资源并返回
+
+#### Scenario: 加载 SpriteAtlas 中的子 Sprite
+- **WHEN** 调用 `LoadAsset<Sprite>("CommonAtlas", subAssetName: "icon_gold")`
+- **THEN** 系统加载图集主 Asset，从中提取名为 "icon_gold" 的 Sprite 子资源并返回
+
+#### Scenario: 不指定 subAssetName 时加载主 Asset
+- **WHEN** 调用 `LoadAsset<GameObject>("Hero")` 不传 subAssetName
+- **THEN** 系统行为与之前一致，返回主 Asset
+
+#### Scenario: 子资源名称不存在
+- **WHEN** 调用 `LoadAsset<Sprite>("CommonAtlas", subAssetName: "nonexistent")` 但该子资源不存在
+- **THEN** 系统记录错误日志并返回 null
+
+### Requirement: CRC 完整性校验
+系统 SHALL 在 `AssetBundle.LoadFromFile` 时传入 CRC 值进行完整性校验。AssetInfo SHALL 包含 `crc` 字段（打包时自动计算）。CRC 校验失败时 SHALL 记录错误日志并返回 null。
+
+#### Scenario: CRC 校验通过正常加载
+- **WHEN** hero.ab 的 CRC 值与 AssetInfo 中记录的一致
+- **THEN** LoadFromFile 正常返回 AssetBundle 对象
+
+#### Scenario: CRC 校验失败
+- **WHEN** hero.ab 的 CRC 值与 AssetInfo 中记录的不一致（文件损坏）
+- **THEN** LoadFromFile 返回 null，系统记录错误日志 "hero.ab CRC 校验失败，文件可能已损坏"
+
+#### Scenario: CRC 校验失败后尝试降级
+- **WHEN** hero.ab CRC 校验失败，且该 AB 在 StreamingAssets 中有备份
+- **THEN** 系统尝试从 StreamingAssets 重新复制该 AB 到 persistentDataPath 并再次加载
