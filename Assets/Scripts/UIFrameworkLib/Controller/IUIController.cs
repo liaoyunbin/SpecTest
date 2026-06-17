@@ -22,8 +22,7 @@ namespace UIFrameworkLib
         UniTask<bool> EnterAsync(); // 入场：设置交互→播放动画。返回 false 表示中断
         UniTask ExitAsync();        // 退场：关闭交互→OnHide→播放动画→隐藏 View
 
-        // === 静态元数据（UIManager 读取） ===
-        string PrefabPath { get; }
+		string PrefabPath { get; }
         UILayer Layer { get; }
 
         // === 语义化状态 ===

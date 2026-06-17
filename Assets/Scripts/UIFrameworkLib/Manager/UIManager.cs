@@ -88,10 +88,6 @@ namespace UIFrameworkLib
             StartOpening(controllerType, args);
         }
 
-        /// <summary>关闭 UI</summary>
-        public void Close<T>() where T : IUIController
-            => CloseByType(typeof(T));
-
         /// <summary>通过 Type 关闭 UI</summary>
         public void CloseByType(Type key)
         {

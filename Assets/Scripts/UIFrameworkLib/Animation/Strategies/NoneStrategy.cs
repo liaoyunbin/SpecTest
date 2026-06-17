@@ -1,3 +1,5 @@
+using UnityEngine;
+
 namespace UIFrameworkLib
 {
     /// <summary>无动画策略（立即完成）</summary>
@@ -8,6 +10,7 @@ namespace UIFrameworkLib
 
         public void Enter(RectTransform target) { }
 
-        public void Exit(RectTransform target) { }
-    }
+		public void Exit(RectTransform target) { }
+
+	}
 }

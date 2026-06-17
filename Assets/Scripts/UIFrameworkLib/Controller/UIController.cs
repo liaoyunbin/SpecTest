@@ -1,5 +1,6 @@
 using System;
 using Cysharp.Threading.Tasks;
+using Unity.VisualScripting;
 using UnityEngine;
 
 namespace UIFrameworkLib
@@ -91,13 +92,13 @@ namespace UIFrameworkLib
             view.gameObject.SetActive(false);
         }
 
-        // === 生命周期（业务层重写） ===
-        protected internal virtual void OnInit() { }
-        protected internal virtual void OnOpen(object args) { }
-        protected internal virtual void OnHide() { }
-        protected internal virtual void OnDispose() { }
+		// === 生命周期（业务层重写） ===
+		public virtual void OnInit() { }
+		public virtual void OnOpen(object args) { }
+		public virtual void OnHide() { }
+		public virtual void OnDispose() { }
 
         // === 辅助 ===
-        protected void CloseSelf() => UIManager.Instance.Close<T>();
+        protected void CloseSelf() => UIManager.Instance.CloseByType(typeof(This));
     }
 }
