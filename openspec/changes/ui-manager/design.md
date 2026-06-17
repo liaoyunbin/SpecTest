@@ -27,11 +27,11 @@ None → Loading → AnimationEnter → Opened → AnimationExit → Closed
 - 6 个明确状态，所有转换走 `TryTransitionTo()`，非法转换自动拦截
 - `IsTransitioning` 判断是否处于过渡状态（Loading / AnimationEnter / AnimationExit）
 
-### 2.2 异步加载
+### 2.2 异步加载（UniTask）
 
-- 使用 `Resources.LoadAsync` 异步加载 Prefab
-- 支持 CancellationToken 取消
-- 超时看门狗（5 秒无响应强制跳转 Opened）
+- 使用 `Resources.LoadAsync` + `req.ToUniTask(cancellationToken:)` 异步加载 Prefab
+- 支持 `CancellationToken` 取消（通过 `AttachExternalCancellation`）
+- 超时看门狗（5 秒仅日志警告，不中断流程）
 - 加载失败进入 Closed
 
 ### 2.3 双通道动画
@@ -42,23 +42,18 @@ None → Loading → AnimationEnter → Opened → AnimationExit → Closed
 
 ### 2.4 请求队列
 
-| 模式 | 语义 | 适用场景 |
-|------|------|---------|
-| `WaitForOpen`（默认） | 前一个 UI 到达 Opened 后，下一个开始加载 | 连续打开多个平级界面（Shop → Bag） |
-| `WaitForClose` | 前一个 UI 完全关闭（Closed）后，下一个才开始 | 过渡场景（关卡切换），两个 UI 不应共存 |
-
-- 队列上限 10 个，满时丢弃最旧请求
-
-### 2.5 队列模式（QueueMode）
-
 ```
-Open<T>(QueueMode.WaitForOpen)    → 默认行为
-Open<T>(QueueMode.WaitForClose)   → 等待前一个完全关闭
+Open<T>() 执行逻辑：
+  同一界面已打开       → 直接刷新 (Controller.OnOpen(args))
+  同一界面已在队列中   → 刷新参数（去重，只保留最新 args）
+  有任务在执行         → 入队等待
+  无任务               → 立即执行
 
-ProcessNext() 根据 QueueMode 判断：
-  WaitForOpen  → 当前 reaching Opened 即触发
-  WaitForClose → 需所有非 Closed Context 清空才触发
-```
+ProcessNext():
+  队列不为空 → 出队执行
+  队列为空   → _isProcessing = false
+
+队列上限 10 个，满时丢弃最旧请求
 
 ### 2.6 层级管理
 
@@ -80,17 +75,17 @@ ProcessNext() 根据 QueueMode 判断：
 - `UIView.RestoreSelectables()` — 入场动画结束恢复
 - 退场动画开始时再次禁用
 
-### 2.9 自动绑定
+### 2.9 组件绑定
 
-- UIMark 组件标记需要绑定的节点
-- 编辑器代码生成器自动生成强类型字段（无反射）
+- 子类在 Awake 或 OnInit 中手动通过 `transform.Find()` 等方式绑定组件
+- 不使用编辑器代码生成，减少工具链依赖
 
 ### 2.10 UI 栈管理
 
 - Normal 界面入栈，支持 Back（关闭当前，恢复上一个）
 - 上一个 Normal 入栈时自动 `OnHide`，恢复时自动 `OnShown`
 - Popup 记录栈顶 Normal 为 PreviousContext，不独立入栈
-- Toast / Loading 不进入栈
+- Background / Popup 不进入 Normal 栈
 
 ### 2.11 生命周期
 
@@ -140,8 +135,6 @@ ResolveUIKey<TController>()
 | UIKey | string | - | UI 唯一标识（与 Controller 类名对应） |
 | PrefabPath | string | - | Resources 相对路径 |
 | Layer | int | Normal=1 | Background=0 / Normal=1 / Popup=2 |
-| EnterAnimId | int | 0 | 入场动画策略 ID（0=Fade） |
-| ExitAnimId | int | 0 | 退场动画策略 ID（0=Fade） |
 
 ### 2.16 对象池（UIPool）
 
@@ -149,13 +142,35 @@ ResolveUIKey<TController>()
 - 每 UIKey 最多缓存 5 个
 - `Get()` / `Return(key, go)` / `Clear()`
 
-### 2.17 动画策略（IUIAnimationStrategy）
+### 2.17 动画策略
 
-- `IUIAnimationStrategy` 接口：`PlayEnter()` / `PlayExit()`
-- `UIAnimationRegistry` 中心：`int ID → factory`
-- 内置策略：Fade、BlackFade、Scale、Slide
-- `UIView` 通过 `GetEnterStrategy()` / `GetExitStrategy()` 获取策略
-- `UIRoot.AnimationOverlay` 全屏遮罩层（供 BlackFade 等使用）
+- `UIView` 提供两个 `virtual` 方法：`PlayEnterAnimation` / `PlayExitAnimation`，子类 override 选择效果
+- 内置 `protected` Helper 方法（可直接在 override 中调用）：
+
+| Helper | 效果 | 默认时长 |
+|--------|------|----------|
+| `FadeEnter` / `FadeExit` | 透明度淡入淡出（默认） | 0.3s / 0.2s |
+| `ScaleEnter` / `ScaleExit` | 缩放弹性效果 | 0.3s / 0.2s |
+| `SlideUpEnter` / `SlideUpExit` | 从下→上 / 上→下 | 0.3s / 0.2s |
+| `SlideDownEnter` / `SlideDownExit` | 从上→下 / 下→上 | 0.3s / 0.2s |
+| `BlackFadeEnter` / `BlackFadeExit` | 黑屏渐入渐出（需传入 Image） | 0.2+0.3s |
+
+- 所有动画通过 `UniTask` + `Time.deltaTime` 驱动，无第三方依赖
+- Panel 示例：
+
+```csharp
+public class ShopView : UIView
+{
+    public override void PlayEnterAnimation(Action onComplete)
+    {
+        ScaleEnter(onComplete, 0.35f);  // 缩放弹入
+    }
+    public override void PlayExitAnimation(Action onComplete)
+    {
+        FadeExit(onComplete, 0.15f);   // 淡出
+    }
+}
+```
 
 ### 2.18 启动流程
 
@@ -226,16 +241,8 @@ Assets/Scripts/UIFrameworkLib/
 │   ├── UIPool.cs                 # 对象池
 │   ├── UIResourceLoader.cs       # 资源加载器（池 + 异步加载 + 实例化）
 │   └── UIRegistry.cs             # 注册表
-├── Animation/
-│   ├── IUIAnimationStrategy.cs   # 动画策略接口
-│   ├── FadeStrategy.cs           # 淡入淡出
-│   ├── BlackFadeStrategy.cs      # 黑屏渐入渐出
-│   ├── ScaleStrategy.cs          # 缩放
-│   ├── SlideStrategy.cs          # 滑入滑出
-│   └── UIAnimationRegistry.cs    # 动画注册中心
 ├── Config/
-│   └── UIConfigLoader.cs         # Luban 配置加载器
+│   └── UIConfigLoader.cs         # 配置加载器
 └── Editor/
-    ├── UIMark.cs                 # 自动绑定标记
     └── UIEditorWindow.cs         # 运行时调试窗口
 ```

@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using UnityEngine;
 
 namespace UIFrameworkLib
@@ -42,7 +43,7 @@ namespace UIFrameworkLib
 
         /// <summary>取消令牌（用于异步操作）</summary>
         public CancellationToken CancellationToken =>
-            Context?.Cts?.Token ?? System.Threading.CancellationToken.None;
+            Context?.Cts?.Token ?? CancellationToken.None;
 
         // ================================================================
         // IUIController 显式实现

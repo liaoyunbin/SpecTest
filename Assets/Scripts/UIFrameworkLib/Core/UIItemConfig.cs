@@ -1,12 +1,12 @@
 namespace UIFrameworkLib
 {
     /// <summary>
-    /// UI 面板配置
-    /// 由外部配置源（Luban / ScriptableObject / JSON）通过 UIConfigLoader 填充
+    /// UI 配置模型
+    /// 由外部将原始配置（Luban / JSON / ScriptableObject）转换为本模型后注入框架
     /// </summary>
     public class UIItemConfig
     {
-        /// <summary>UI 唯一标识（与 UIRegistry 注册的 Controller 对应）</summary>
+        /// <summary>UI 唯一标识（与 Controller 类名对应，如 "Shop"）</summary>
         public string UIKey { get; set; }
 
         /// <summary>预制体 Resources 路径</summary>
@@ -14,11 +14,5 @@ namespace UIFrameworkLib
 
         /// <summary>层级（Background / Normal / Popup）</summary>
         public UILayer Layer { get; set; } = UILayer.Normal;
-
-        /// <summary>入场动画策略 ID（默认 0 = Fade）</summary>
-        public int EnterAnimId { get; set; }
-
-        /// <summary>退场动画策略 ID（默认 0 = Fade）</summary>
-        public int ExitAnimId { get; set; }
     }
 }

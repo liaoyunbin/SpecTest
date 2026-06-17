@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
-using System.Threading.Tasks;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -38,12 +38,8 @@ namespace UIFrameworkLib
         public static UIManager Instance => _instance ??= new UIManager();
 
         // ================================================================
-        // 内部组件
+        // 构造
         // ================================================================
-
-        public UIConfigLoader ConfigLoader { get; } = new();
-        public UIPool Pool { get; } = new();
-        public UIResourceLoader ResourceLoader { get; private set; }
 
         private UIManager()
         {
@@ -51,7 +47,7 @@ namespace UIFrameworkLib
         }
 
         // ================================================================
-        // 内部组件
+        // 内部字段
         // ================================================================
 
         /// <summary>配置加载器</summary>
@@ -59,6 +55,9 @@ namespace UIFrameworkLib
 
         /// <summary>对象池</summary>
         public UIPool Pool { get; } = new();
+
+        /// <summary>资源加载器</summary>
+        public UIResourceLoader ResourceLoader { get; private set; }
 
         /// <summary>活跃的 UI Context 字典</summary>
         private readonly Dictionary<string, UIContext> _activeContexts = new();
@@ -217,7 +216,7 @@ namespace UIFrameworkLib
                 return;
             }
 
-            // 单例已打开 → 直接刷新
+            // 同一界面已打开 → 直接刷新
             if (_activeContexts.TryGetValue(uiKey, out var existing)
                 && existing.StateMachine.CurrentState == UIState.Opened)
             {
@@ -225,9 +224,15 @@ namespace UIFrameworkLib
                 return;
             }
 
-            var item = new QueueItem(uiKey, args);
+            // 同一界面已在队列中 → 刷新参数（去重）
+            var sameInQueue = _queue.FirstOrDefault(q => q.UIKey == uiKey);
+            if (sameInQueue != null)
+            {
+                sameInQueue.Args = args;
+                return;
+            }
 
-            // 有任务正在执行 → 入队
+            // 有任务在执行 → 入队
             if (_isProcessing || IsBusy)
             {
                 if (_queue.Count >= MAX_QUEUE_SIZE)
@@ -235,12 +240,13 @@ namespace UIFrameworkLib
                     var dropped = _queue.Dequeue();
                     Debug.LogWarning($"[UIFrameworkLib] 队列满，丢弃最旧: {dropped.UIKey}");
                 }
-                _queue.Enqueue(item);
+                _queue.Enqueue(new QueueItem(uiKey, args));
                 return;
             }
 
+            // 无任务 → 直接执行
             _isProcessing = true;
-            ExecuteOpen(item);
+            ExecuteOpen(new QueueItem(uiKey, args));
         }
 
         private void ProcessNext()
@@ -248,7 +254,6 @@ namespace UIFrameworkLib
             if (_queue.Count > 0)
             {
                 var next = _queue.Dequeue();
-                _isProcessing = true;
                 ExecuteOpen(next);
             }
             else
@@ -295,10 +300,7 @@ namespace UIFrameworkLib
                 var view = loadResult.View;
                 view.Internal_SetContext(ctx);
 
-                // ---- 2. 自动绑定 ----
-                SafeExecute(() => view.AutoBind(), $"{item.UIKey}.AutoBind");
-
-                // ---- 3. 创建 Controller ----
+                // ---- 2. 创建 Controller ----
                 var controllerTypeName = $"{GetControllerTypeNamespace()}.{item.UIKey}Controller";
                 var controller = CreateController(controllerTypeName);
                 if (controller != null)
@@ -319,9 +321,9 @@ namespace UIFrameworkLib
                 SafeExecute(() => controller?.OnOpen(item.Args), $"{item.UIKey}.OnOpen");
 
                 // 等待入场动画
-                var animTcs = new TaskCompletionSource<bool>();
-                view.PlayEnterAnimation(() => animTcs.TrySetResult(true));
-                await animTcs.Task.WithCancellation(ct);
+                var animTcs = new UniTaskCompletionSource();
+                view.PlayEnterAnimation(() => animTcs.TrySetResult());
+                await animTcs.Task.AttachExternalCancellation(ct);
 
                 if (ct.IsCancellationRequested) { CleanupAndNext(ctx); return; }
 
@@ -367,8 +369,9 @@ namespace UIFrameworkLib
                 SafeExecute(() => ctx.Controller?.OnHide(), $"{ctx.UIKey}.OnHide");
                 ctx.View.SetInteractive(false);
 
-                var tcs = new TaskCompletionSource<bool>();
-                ctx.View.PlayExitAnimation(() => tcs.TrySetResult(true));
+                // 等待退场动画
+                var tcs = new UniTaskCompletionSource();
+                ctx.View.PlayExitAnimation(() => tcs.TrySetResult());
                 await tcs.Task;
 
                 ctx.StateMachine.TryTransitionTo(UIState.Closed);
@@ -592,30 +595,12 @@ namespace UIFrameworkLib
         private class QueueItem
         {
             public string UIKey { get; }
-            public object Args { get; }
+            public object Args { get; set; }
 
             public QueueItem(string uiKey, object args)
             {
                 UIKey = uiKey;
                 Args = args;
-            }
-        }
-
-        /// <summary>
-        /// Task 取消扩展：在 CancellationToken 触发时抛出 OperationCanceledException
-        /// 参考：https://github.com/Unity-Technologies/UnityCsReference
-        /// </summary>
-        private static class TaskExtensions
-        {
-            public static async Task WithCancellation(this Task task, CancellationToken token)
-            {
-                var tcs = new TaskCompletionSource<bool>();
-                using (token.Register(() => tcs.TrySetResult(true)))
-                {
-                    if (await Task.WhenAny(task, tcs.Task) == tcs.Task)
-                        throw new OperationCanceledException(token);
-                }
-                await task; // 传播原始异常
             }
         }
     }

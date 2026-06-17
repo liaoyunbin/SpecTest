@@ -55,8 +55,6 @@ class UIItemConfig
     string  UIKey           // 唯一标识
     string  PrefabPath      // Resources 路径
     UILayer Layer           // 层级（默认 Normal）
-    int     EnterAnimId     // 入场动画策略 ID（默认 0）
-    int     ExitAnimId      // 退场动画策略 ID（默认 0）
 }
 
 // --- 1d. UIContext ---
@@ -160,48 +158,42 @@ abstract class UIView : MonoBehaviour
     // 属性
     UIContext Context                    // 运行时上下文
 
-    // --- 自动绑定（代码生成器实现）---
-    protected abstract void AutoBind()
-
     // --- 交互控制 ---
     void SetInteractive(bool enabled)    // 控制 CanvasGroup
     void DisableAllSelectables()         // 快照所有 Selectable，设为不可交互
     void RestoreSelectables()            // 恢复快照
 
-    // --- 动画（委托给策略）---
-    // 默认从 UIAnimationRegistry 获取策略
-    protected virtual IUIAnimationStrategy GetEnterStrategy()
-        → UIAnimationRegistry.Get(Context.Config.EnterAnimId)
-    protected virtual IUIAnimationStrategy GetExitStrategy()
-        → UIAnimationRegistry.Get(Context.Config.ExitAnimId)
+    // --- 动画（virtual，子类 override 选择策略）---
+    virtual void PlayEnterAnimation(Action onComplete)
+        // 默认 FadeEnter (淡入 0.3s)
+    virtual void PlayExitAnimation(Action onComplete)
+        // 默认 FadeExit (淡出 0.2s)
 
-    void PlayEnterAnimation(Action onComplete)
-    {
-        var overlay = UIRoot.Instance?.AnimationOverlay
-        GetEnterStrategy().PlayEnter(gameObject, overlay, onComplete)
-    }
-    void PlayExitAnimation(Action onComplete)
-    {
-        var overlay = UIRoot.Instance?.AnimationOverlay
-        GetExitStrategy().PlayExit(gameObject, overlay, onComplete)
-    }
+    // --- 内置动画 Helper（子类直接在 override 中调用）---
+    // 淡入淡出
+    protected void FadeEnter(Action onComplete, float duration = 0.3f)
+    protected void FadeExit(Action onComplete, float duration = 0.2f)
 
-    // --- Popup 遮罩 ---
-    protected virtual RectTransform GetOverlay()
-        → UIRoot.Instance?.AnimationOverlay
+    // 缩放弹性
+    protected void ScaleEnter(Action onComplete, float duration = 0.3f)
+    protected void ScaleExit(Action onComplete, float duration = 0.2f)
 
+    // 滑动
+    protected void SlideUpEnter(Action onComplete, float duration = 0.3f)
+    protected void SlideUpExit(Action onComplete, float duration = 0.2f)
+    protected void SlideDownEnter(Action onComplete, float duration = 0.3f)
+    protected void SlideDownExit(Action onComplete, float duration = 0.2f)
+
+    // 黑屏渐入渐出（需传入 BlackImage 引用）
+    protected void BlackFadeEnter(Image blackImage, Action onComplete, ...)
+    protected void BlackFadeExit(Image blackImage, Action onComplete, ...)
+
+    // --- Popup 遮罩（子类实现）---
     protected virtual void ShowMask()
-    {
-        // 在全屏覆盖层上创建/显示半透明遮罩 Image
-    }
     protected virtual void HideMask()
-    {
-        // 隐藏遮罩 Image
-    }
 
     // --- 框架内部调用 ---
     void Internal_SetContext(UIContext context)  // 设置 Context
-    void Internal_OnShown()                      // 入场动画结束自动调用
 }
 
 // --- 3b. UIRoot ---
@@ -212,7 +204,6 @@ class UIRoot : MonoBehaviour
     Transform BackgroundLayer          // 各层级父节点
     Transform NormalLayer
     Transform PopupLayer
-    RectTransform AnimationOverlay      // 全屏动画覆盖层（黑屏/白屏载体）
 
     Transform GetLayer(UILayer layer)   // 根据层级返回对应 Transform
 
@@ -221,9 +212,8 @@ class UIRoot : MonoBehaviour
     {
         // 1. 创建 Canvas（ScreenSpaceCamera, SortingOrder 基准）
         // 2. 为每层创建 GameObject（各自带 Canvas + GraphicRaycaster）
-        //    各层 SortingOrder: Normal=0, Popup=100, Toast=200, Loading=300
-        // 3. 创建 AnimationOverlay（全屏 Image, 初始 alpha=0, raycastTarget=false）
-        // 4. DontDestroyOnLoad
+        // 各层 SortingOrder: Background=0, Normal=100, Popup=200
+        // 3. DontDestroyOnLoad
     }
 }
 
@@ -315,24 +305,19 @@ class UIManager
     // 对外接口
     // ============================================================
 
-    // 打开（默认 WaitForOpen）
+    // 打开
     void Open<T>(object args = null) where T : IUIController
     {
         var uiKey = Registry.ResolveUIKey(typeof(T))
         if uiKey == null → LogError + return
-        EnqueueOpen(uiKey, args, QueueMode.WaitForOpen)
-    }
-
-    // 打开（指定队列模式）
-    void Open<T>(QueueMode mode, object args = null) where T : IUIController
-    {
-        var uiKey = Registry.ResolveUIKey(typeof(T))
-        if uiKey == null → LogError + return
-        EnqueueOpen(uiKey, args, mode)
+        EnqueueOpen(uiKey, args)
     }
 
     // 按 UIKey 打开（调试/非泛型）
-    void Open(string uiKey, object args = null, QueueMode mode = WaitForOpen)
+    void Open(string uiKey, object args = null)
+    {
+        EnqueueOpen(uiKey, args)
+    }
 
     // 关闭（泛型）
     void Close<T>() where T : IUIController
@@ -350,7 +335,7 @@ class UIManager
     // 紧急关闭所有
     void CloseAll()
     {
-        // 清空队列 + 取消通道 + 销毁所有活跃 UI + 清空栈
+        // 清空队列 + 取消通道 + 销毁所有活跃 UI + 清空栈 + 清空 Background/Popup 引用
     }
 
     // 清空对象池
@@ -365,50 +350,37 @@ class UIManager
     // 队列调度
     // ============================================================
 
-    void EnqueueOpen(string uiKey, object args, QueueMode mode)
+    void EnqueueOpen(string uiKey, object args)
     {
         config = ConfigLoader.Get(uiKey)
         if config == null → LogError + return
 
-        // 单例已打开 → 直接刷新 OnOpen
+        // 同一界面已打开 → 直接刷新
         if _activeContexts 中存在 Opened 的实例
             → Controller.OnOpen(args) + return
 
-        item = new QueueItem(uiKey, args, mode)
+        // 同一界面已在队列中 → 刷新参数（去重）
+        if _queue 中存在同 UIKey 的元素
+            → 更新该元素的 Args + return
 
         // 忙 → 入队
         if _isProcessing || IsBusy
             if _queue.Count >= MAX_QUEUE_SIZE → 丢弃最旧
-            _queue.Enqueue(item)
+            _queue.Enqueue(new QueueItem(uiKey, args))
             return
 
         // 空闲 → 直接执行
         _isProcessing = true
-        ExecuteOpen(item)
+        ExecuteOpen(new QueueItem(uiKey, args))
     }
 
     void ProcessNext()
     {
-        while _queue.Count > 0
-            next = _queue.Peek()
-
-            // WaitForClose：系统中有非 Closed 的 UI → 暂不执行
-            if next.Mode == QueueMode.WaitForClose && HasActiveUI()
-                return
-
-            _queue.Dequeue()
-            _isProcessing = true
+        if _queue.Count > 0
+            next = _queue.Dequeue()
             ExecuteOpen(next)
-            return
-
-        _isProcessing = false
-    }
-
-    bool HasActiveUI()
-    {
-        return _enteringContext != null
-            || _exitingContext != null
-            || _activeContexts.Values 中存在 State != Closed 的 Context
+        else
+            _isProcessing = false
     }
 
     // ============================================================
@@ -434,10 +406,7 @@ class UIManager
             view = loadResult.View
             view.Internal_SetContext(ctx)
 
-            // 2. AutoBind
-            SafeExecute(view.AutoBind)
-
-            // 3. 创建 Controller + 绑定
+            // 2. 创建 Controller + 绑定
             controller = Registry.CreateController(Registry.GetControllerType(item.UIKey))
             if controller != null → ctx.Bind(view, controller)
 
@@ -455,9 +424,9 @@ class UIManager
             SafeExecute(controller.OnOpen(item.Args))
 
             // 10. 入场动画
-            tcs = TaskCompletionSource<bool>
-            view.PlayEnterAnimation(() → tcs.SetResult(true))
-            await tcs.Task.WithCancellation(ct)
+            tcs = UniTaskCompletionSource
+            view.PlayEnterAnimation(() → tcs.TrySetResult())
+            await tcs.Task.AttachExternalCancellation(ct)
             if ct cancelled → CleanupAndNext + return
 
             // 11. 动画结束 → Opened
@@ -491,8 +460,8 @@ class UIManager
             SafeExecute(ctx.Controller.OnHide)
             ctx.View.SetInteractive(false)
 
-            tcs = TaskCompletionSource<bool>
-            ctx.View.PlayExitAnimation(() → tcs.SetResult(true))
+            tcs = UniTaskCompletionSource
+            ctx.View.PlayExitAnimation(() → tcs.TrySetResult())
             await tcs.Task
 
             ctx.StateMachine → Closed
@@ -517,22 +486,38 @@ class UIManager
 
     void RegisterContext(UIContext ctx)
     {
-        key = ctx.UIKey
-        _activeContexts[key] = ctx
+        _activeContexts[ctx.UIKey] = ctx
 
-        if ctx.Config.Layer == Normal
-            if _normalStack 不为空
-                上一个 Normal → OnHide
-                ctx.PreviousContext = 上一个
-            _normalStack.Add(ctx)
-        else if ctx.Config.Layer == Popup
-            ctx.PreviousContext = _normalStack 栈顶（可为 null）
+        switch ctx.Config.Layer:
+            Background:
+                // 关闭其上所有 Normal 和 Popup
+                CloseAllNormalAndPopup()
+                // 替换当前 Background
+                if _backgroundContext != null && _backgroundContext != ctx
+                    StartExit(_backgroundContext)
+                _backgroundContext = ctx
+
+            Normal:
+                if _normalStack 不为空
+                    上一个 Normal → OnHide
+                    ctx.PreviousContext = 上一个
+                _normalStack.Add(ctx)
+
+            Popup:
+                // 替换当前 Popup
+                if _currentPopup != null && _currentPopup != ctx
+                    StartExit(_currentPopup)
+                _currentPopup = ctx
+                ctx.PreviousContext = _normalStack 栈顶（可为 null）
     }
 
     void UnregisterContext(UIContext ctx)
     {
         _activeContexts.Remove(ctx.UIKey)
-        if ctx.Config.Layer == Normal → _normalStack.Remove(ctx)
+        switch ctx.Config.Layer:
+            Background → _backgroundContext 置 null（如果相等）
+            Normal     → _normalStack.Remove(ctx)
+            Popup      → _currentPopup 置 null（如果相等）
     }
 
     void RestorePreviousNormal()
@@ -541,129 +526,25 @@ class UIManager
             栈顶 Normal 且状态为 Opened
                 → Controller.OnShown + view.SetInteractive(true)
     }
-}
 
-
-// ============================================================
-// 5. ANIMATION — 动画策略层
-// ============================================================
-
-// --- 5a. 策略接口 ---
-interface IUIAnimationStrategy
-{
-    // target: 目标 GameObject
-    // overlay: 全屏覆盖层 RectTransform（黑屏/白屏载体，可为 null）
-    // onComplete: 动画完成回调
-    void PlayEnter(GameObject target, RectTransform overlay, Action onComplete)
-    void PlayExit(GameObject target, RectTransform overlay, Action onComplete)
-}
-
-// --- 5b. 淡入淡出 ---
-class FadeStrategy : IUIAnimationStrategy
-{
-    void PlayEnter(target, overlay, onComplete)
+    void CloseAllNormalAndPopup()
     {
-        // CanvasGroup alpha 0→1, 0.3s, OutQuad
-    }
-    void PlayExit(target, overlay, onComplete)
-    {
-        // CanvasGroup alpha 1→0, 0.2s, InQuad
-    }
-}
+        // 关闭当前 Popup
+        if _currentPopup != null && _currentPopup 状态为 Opened
+            StartExit(_currentPopup)
+        _currentPopup = null
 
-// --- 5c. 黑屏渐入渐出 ---
-class BlackFadeStrategy : IUIAnimationStrategy
-{
-    // 参数：fadeInDuration, holdDuration, fadeOutDuration, overlayColor
-
-    void PlayEnter(target, overlay, onComplete)
-    {
-        if overlay == null → 回退到 FadeStrategy
-
-        // 1. 遮罩 alpha 0→1（黑屏）
-        // 2. 黑屏中 target alpha = 1（显示目标）
-        // 3. 遮罩 alpha 1→0（恢复）
-    }
-    void PlayExit(target, overlay, onComplete)
-    {
-        if overlay == null → 回退到 FadeStrategy
-
-        // 1. 遮罩 alpha 0→1 + target alpha 1→0（同时）
-        // 2. 遮罩 alpha 1→0（恢复）
-    }
-}
-
-// --- 5d. 缩放 ---
-class ScaleStrategy : IUIAnimationStrategy
-{
-    void PlayEnter(target, overlay, onComplete)
-    {
-        // scale 0→1 + alpha 0→1（弹性动画）
-    }
-    void PlayExit(target, overlay, onComplete)
-    {
-        // scale 1→0.8 + alpha 1→0
-    }
-}
-
-// --- 5e. 滑入滑出 ---
-class SlideStrategy : IUIAnimationStrategy
-{
-    enum Direction { Left, Right, Top, Bottom }
-
-    void PlayEnter(target, overlay, onComplete)
-    {
-        // 从指定方向滑入
-    }
-    void PlayExit(target, overlay, onComplete)
-    {
-        // 从指定方向滑出
-    }
-}
-
-// --- 5f. 动画注册中心 ---
-static class UIAnimationRegistry
-{
-    static Dictionary<int, Func<IUIAnimationStrategy>> _registry
-
-    static constructor()
-    {
-        // ID 0: Fade（默认）
-        Register(0, () → new FadeStrategy())
-        // ID 1: 黑屏淡入淡出
-        Register(1, () → new BlackFadeStrategy(...))
-        // ID 2: 白屏闪光
-        Register(2, () → new BlackFadeStrategy(overlayColor: white))
-        // ID 3: 缩放
-        Register(3, () → new ScaleStrategy())
-        // ID 4: 左侧滑入
-        Register(4, () → new SlideStrategy(Left))
-        // ID 5: 右侧滑入
-        Register(5, () → new SlideStrategy(Right))
-    }
-
-    static void Register(int id, Func<IUIAnimationStrategy> factory)
-    static IUIAnimationStrategy Get(int id)
-        → _registry.TryGet(id) ?? _registry[0]()
-}
-
-// --- 5g. 组合策略（可选扩展）---
-class CompositeStrategy : IUIAnimationStrategy
-{
-    // 同时播放多个策略（如 Fade + Scale）
-    List<IUIAnimationStrategy> _strategies
-
-    void PlayEnter(target, overlay, onComplete)
-    {
-        int count = _strategies.Count
-        foreach strategy in _strategies
-            strategy.PlayEnter(target, overlay, () → if --count == 0 → onComplete)
+        // 关闭所有 Normal
+        foreach normal in _normalStack (copy)
+            if normal 状态为 Opened
+                StartExit(normal)
+        _normalStack.Clear()
     }
 }
 
 
 // ============================================================
-// 6. CONFIG — 配置加载器
+// 5. CONFIG — 配置加载器
 // ============================================================
 
 class UIConfigLoader
@@ -705,7 +586,7 @@ class UIResourceLoader
     UIResourceLoader(UIPool pool)
 
     // 异步加载 + 实例化 UI
-    async Task<UIResourceLoadResult> LoadAsync(UIItemConfig config, CancellationToken ct)
+    async UniTask<UIResourceLoadResult> LoadAsync(UIItemConfig config, CancellationToken ct)
     {
         // 1. 优先从池获取
         go = _pool.Get(config.UIKey)
@@ -720,9 +601,11 @@ class UIResourceLoader
     }
 
     // 异步加载 Prefab（可被子类重写，支持 Addressables / AssetBundle）
-    protected virtual async Task<GameObject> LoadPrefabAsync(UIItemConfig config, CancellationToken ct)
+    protected virtual async UniTask<GameObject> LoadPrefabAsync(UIItemConfig config, CancellationToken ct)
     {
-        // Resources.LoadAsync + 5s 超时警告
+        // req = Resources.LoadAsync<GameObject>(config.PrefabPath)
+        // await req.ToUniTask(cancellationToken: ct)
+        // 5s 超时看门狗：TimeoutGuard(config.UIKey, 5f).Forget()
     }
 
     // 实例化 + 获取 UIView
@@ -746,13 +629,7 @@ class UIResourceLoadResult
 // 8. EDITOR — 编辑器工具
 // ============================================================
 
-// --- 8a. UIMark（标记组件）---
-class UIMark : MonoBehaviour
-{
-    string Comment    // 备注（可选）
-}
-
-// --- 8b. UIEditorWindow（调试窗口）---
+// --- 8a. UIEditorWindow（调试窗口）---
 class UIEditorWindow : EditorWindow
 {
     [MenuItem("UIFrameworkLib/UI Debugger")]
@@ -810,16 +687,16 @@ static void Bootstrap()
 // ============================================================
 
 // --- 9a. 定义 View ---
-// ShopView.cs（UIMark 生成绑定代码）
+// ShopView.cs
 class ShopView : UIView
 {
     Button m_BtnClose
     Text   m_TxtGold
     Transform m_ItemRoot
 
-    override void AutoBind()
+    override void Awake()
     {
-        // 由代码生成器自动填充
+        // 手动绑定组件
         m_BtnClose = transform.Find("BtnClose").GetComponent<Button>()
         m_TxtGold  = transform.Find("TxtGold").GetComponent<Text>()
         m_ItemRoot = transform.Find("ItemRoot")
@@ -862,7 +739,7 @@ void GameStart()
     UIManager.Instance.Open<BagController>()
 
     // 弹出确认对话框（等待上一个界面完全关闭后出现）
-    UIManager.Instance.Open<ConfirmPopupController>(QueueMode.WaitForClose)
+    UIManager.Instance.Open<ConfirmPopupController>()
 
     // 关闭商店
     UIManager.Instance.Close<ShopController>()
@@ -873,19 +750,11 @@ void GameStart()
 
 
 // ============================================================
-// 附录：队列模式枚举
+// 附录：队列元素
 // ============================================================
 
-enum QueueMode
-{
-    WaitForOpen,     // 前一个 UI 到达 Opened 后执行（默认）
-    WaitForClose,    // 前一个 UI 完全关闭后执行
-}
-
-// 队列元素
 class QueueItem
 {
     string    UIKey
-    object    Args
-    QueueMode Mode
+    object    Args { get; set; }   // 可更新（去重时刷新参数）
 }

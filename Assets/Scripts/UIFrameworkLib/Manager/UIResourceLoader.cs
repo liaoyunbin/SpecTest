@@ -1,6 +1,6 @@
 using System;
 using System.Threading;
-using System.Threading.Tasks;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -36,7 +36,7 @@ namespace UIFrameworkLib
         /// <param name="config">UI 配置</param>
         /// <param name="cancellationToken">取消令牌</param>
         /// <returns>加载结果（含 Instance 和 UIView），失败返回 null</returns>
-        public async Task<UIResourceLoadResult> LoadAsync(
+        public async UniTask<UIResourceLoadResult> LoadAsync(
             UIItemConfig config,
             CancellationToken cancellationToken)
         {
@@ -68,7 +68,7 @@ namespace UIFrameworkLib
         /// 异步加载 Prefab（从 Resources）
         /// 子类可重写以支持 Addressables / AssetBundle
         /// </summary>
-        protected virtual async Task<GameObject> LoadPrefabAsync(
+        protected virtual async UniTask<GameObject> LoadPrefabAsync(
             UIItemConfig config,
             CancellationToken cancellationToken)
         {
@@ -80,11 +80,11 @@ namespace UIFrameworkLib
 
             var ct = cancellationToken;
 
-            // 超时看门狗（5 秒）
-            var timeoutTask = TimeoutGuard(config.UIKey, 5f);
+            // 超时看门狗（仅日志警告，不阻塞）
+            TimeoutGuard(config.UIKey, 5f).Forget();
 
             var req = Resources.LoadAsync<GameObject>(config.PrefabPath);
-            await req.WithCancellation(ct);
+            await req.ToUniTask(cancellationToken: ct);
 
             if (ct.IsCancellationRequested) return null;
 
@@ -125,9 +125,9 @@ namespace UIFrameworkLib
         /// <summary>
         /// 超时看门狗（仅日志警告，不中断流程）
         /// </summary>
-        private static async Task TimeoutGuard(string uiKey, float timeoutSeconds)
+        private static async UniTaskVoid TimeoutGuard(string uiKey, float timeoutSeconds)
         {
-            await Task.Delay((int)(timeoutSeconds * 1000));
+            await UniTask.Delay((int)(timeoutSeconds * 1000));
             Debug.LogWarning($"[UIResourceLoader] {uiKey} 加载超过 {timeoutSeconds}s");
         }
     }

@@ -20,9 +20,6 @@ namespace UIFrameworkLib
         public Transform NormalLayer { get; private set; }
         public Transform PopupLayer { get; private set; }
 
-        /// <summary>全屏动画覆盖层（供 BlackFadeStrategy 等使用）</summary>
-        public RectTransform AnimationOverlay { get; private set; }
-
         /// <summary>
         /// 场景加载前自动初始化 UIRoot
         /// </summary>
@@ -48,9 +45,6 @@ namespace UIFrameworkLib
             Instance.BackgroundLayer = CreateLayer(go.transform, "BackgroundLayer", 0);
             Instance.NormalLayer     = CreateLayer(go.transform, "NormalLayer",     100);
             Instance.PopupLayer      = CreateLayer(go.transform, "PopupLayer",      200);
-
-            // 创建动画覆盖层（全屏，初始透明，不阻挡射线）
-            Instance.AnimationOverlay = CreateOverlay(go.transform);
 
             Debug.Log("[UIFrameworkLib] UIRoot 初始化完成");
         }
@@ -81,23 +75,6 @@ namespace UIFrameworkLib
             go.AddComponent<GraphicRaycaster>();
 
             return go.transform;
-        }
-
-        private static RectTransform CreateOverlay(Transform parent)
-        {
-            var go = new GameObject("AnimationOverlay");
-            go.transform.SetParent(parent, false);
-
-            var rt = go.AddComponent<RectTransform>();
-            rt.anchorMin = Vector2.zero;
-            rt.anchorMax = Vector2.one;
-            rt.sizeDelta = Vector2.zero;
-
-            var img = go.AddComponent<Image>();
-            img.color = new Color(0, 0, 0, 0);
-            img.raycastTarget = false;
-
-            return rt;
         }
     }
 }
