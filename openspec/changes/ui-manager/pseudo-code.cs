@@ -1,7 +1,10 @@
 /* ============================================================
- * UIFrameworkLib — 完整伪代码
+ * UIFrameworkLib — UI 框架完整伪代码（v9）
  * 命名空间：UIFrameworkLib
- * 语言：C# (Unity)
+ * 语言：C# (Unity + UniTask)
+ *
+ * 本文件供 AI 理解框架设计和需求，和实际代码不完全一致。
+ * 实际代码见 Assets/Scripts/UIFrameworkLib/
  * ============================================================ */
 
 // ============================================================
@@ -9,14 +12,17 @@
 // ============================================================
 
 // --- 1a. UILayer ---
+// 三种层级，按显示顺序由低到高
 enum UILayer
 {
     Background, // 底层背景，打开时弹出其上所有 Normal 和 Popup
-    Normal,     // 标准面板，入栈，支持 Back
-    Popup,      // 弹窗，相互替换，自带遮罩
+    Normal,     // 标准面板，入栈管理，支持 Back
+    Popup,      // 弹窗，相互替换，可自带遮罩
 }
 
 // --- 1b. UIStateMachine ---
+// 6 状态状态机，所有转换走 TryTransitionTo()
+// 替代 CancellationTokenSource 进行异步中断判断
 enum UIState
 {
     None,
@@ -27,87 +33,77 @@ enum UIState
     Closed,
 }
 
+// 合法转换表：
+//   None → Loading
+//   Loading → AnimationEnter, Closed
+//   AnimationEnter → Opened, Closed
+//   Opened → AnimationExit
+//   AnimationExit → Closed, AnimationEnter（覆盖式重新打开）
+//   Closed → Loading（缓存复用）
+
 class UIStateMachine
 {
-    UIState CurrentState             // 当前状态
-    bool    IsTransitioning          // 是否处于过渡中（Loading/AnimEnter/AnimExit）
-    event OnStateChanged(old, new)   // 状态变更事件
+    UIState CurrentState     // 当前状态
+    bool IsTransitioning     // Loading / AnimationEnter / AnimationExit
+    event OnStateChanged(old, new)
 
     bool TryTransitionTo(UIState newState)
     {
         // 查 ValidTransitions 映射表
-        // 合法 → 切换 + 触发事件
-        // 非法 → LogWarning + return false
+        // 合法 → 切换 + 触发事件，return true
+        // 非法 → DebugLogWarning + return false
     }
-
-    // 合法转换表（硬编码）:
-    //   None → Loading
-    //   Loading → AnimationEnter, Closed
-    //   AnimationEnter → Opened, Closed
-    //   Opened → AnimationExit
-    //   AnimationExit → Closed, AnimationEnter
-    //   Closed → Loading
 }
 
 // --- 1c. UIItemConfig ---
+// 配置模型，由外部数据源转换为本模型后注入框架
 class UIItemConfig
 {
-    string  UIKey           // 唯一标识
-    string  PrefabPath      // Resources 路径
-    UILayer Layer           // 层级（默认 Normal）
+    string  UIKey       // UI 唯一标识（与 Controller 类名对应）
+    string  PrefabPath  // Resources 中预制体路径
+    UILayer Layer       // 层级（默认 Normal）
 }
 
 // --- 1d. UIContext ---
-class UIContext : IDisposable
+// 每个 UI 实例的运行时状态容器
+// 生命周期：每次打开创建新 Context → 关闭后释放
+class UIContext
 {
     // 标识
-    string  UIKey
-    int     InstanceId           // 自增 ID
+    string UIKey
+    int    InstanceId     // 自增，每次打开递增
 
     // 核心引用
-    UIView           View         // 表现层
-    IUIController    Controller   // 逻辑层
-    UIItemConfig     Config       // 配置
+    UIView          View        // 表现层引用
+    IUIController   Controller  // 逻辑层引用
+    UIItemConfig    Config      // 配置
 
     // 状态
-    UIStateMachine   StateMachine
-    CancellationTokenSource Cts  // 异步取消
-    float            OpenTime    // 打开时间戳
-    UIContext        PreviousContext  // 上一个 Normal
+    UIStateMachine  StateMachine
+    float           OpenTime     // 打开时间戳
+    UIContext       PreviousContext  // 栈中上一个 UI
 
     // 方法
-    void Bind(UIView view, IUIController controller)
-    void Cancel()                // 取消加载/动画
-    void Dispose()               // 释放 Cts + 清理
-}
-
-// --- 1e. UIKey解析（命名约定）---
-string ResolveUIKey<T>()
-{
-    // 类名去掉 "Controller" 后缀
-    // 示例: ShopController → "Shop"
-    var name = typeof(T).Name
-    return name.EndsWith("Controller")
-        ? name[..^"Controller".Length]
-        : name
-}
-
-// --- 1e. Singleton<T> ---
-abstract class Singleton<T> where T : class, new()
-{
-    private static T _instance
-    private static readonly object _lock = new()
-
-    static T Instance
+    void BindController(IUIController controller)
     {
-        get
-        {
-            if _instance == null
-                lock (_lock)
-                    if _instance == null
-                        _instance = new T()
-            return _instance
-        }
+        // View 创建前调用
+        Controller = controller
+        controller.BindContext(this)
+    }
+
+    void SetView(UIView view)
+    {
+        // Controller 创建 View 后调用
+        View = view
+        Controller?.SetView(view)
+    }
+
+    void Dispose()
+    {
+        // 状态 → Closed
+        // Controller.OnDispose()
+        // 若 View 存在则 Destroy(View.gameObject)
+        // 清空引用
     }
 }
 
@@ -116,54 +112,98 @@ abstract class Singleton<T> where T : class, new()
 // 2. CONTROLLER — 逻辑层
 // ============================================================
 
-// --- 2a. IUIController（内部接口，供框架多态调用）---
+// --- 2a. IUIController（内部接口）---
+// 业务层不应直接使用此接口
 internal interface IUIController
 {
-    // 属性
     UIContext Context { get; }
-
-    // 绑定（框架内部调用）
     void BindContext(UIContext context)
-
-    // 生命周期（框架内部调用）
+    void SetView(UIView view)
     void OnInit()      // 仅一次
     void OnOpen(args)  // 每次打开
     void OnShown()     // 入场动画结束
     void OnHide()      // 退场开始 / 被覆盖
-    void OnDispose()   // 销毁
+    void OnDispose()   // 销毁时
 }
 
-// --- 2b. UIController<T>（基类，业务继承）---
-abstract class UIController<T> : IUIController
-    where T : UIView
+// --- 2b. UIController<T>（泛型基类，业务继承）---
+// 折中方案：Controller 自管理 View 创建，框架提供工具方法
+abstract class UIController<T> : IUIController where T : UIView
 {
-    // 公开属性
-    T           View              // 强类型 View
-    UIContext   Context           // 上下文
-    UIItemConfig Config           // 配置（快捷方式）
-    CancellationToken CancellationToken  // 取消令牌
+    // === 公开属性 ===
+    T           View     // 强类型 View 引用
+    UIContext   Context  // 运行上下文
+    UIItemConfig Config  // 配置快捷方式
 
-    // --- 生命周期（业务重写）---
+    // === View 创建（子类必须实现）===
+    abstract UniTask<T> CreateViewAsync()
+    // 框架在 OnInit 之后、OnOpen 之前调用
+
+    // === 框架提供的工具方法（子类在 CreateViewAsync 中调用）===
+
+    // 从 Resources 加载并实例化 Prefab
+    // 自动检查缓存（隐藏的旧实例），有则直接复用
+    protected async UniTask<T> LoadFromResources(string prefabPath)
+    {
+        uiKey = Context.UIKey
+
+        // 1. 检查缓存
+        cached = UIManager.Instance.GetCachedView(uiKey)
+        if cached != null
+            cached.SetActive(true)
+            return cached.GetComponent<T>()
+
+        // 2. 异步加载 Prefab
+        prefab = await UIResourceLoader.Instance.LoadPrefabAsync(prefabPath)
+        if prefab == null return null
+
+        // 3. 实例化到对应层级
+        parent = UIRoot.Instance.GetLayer(Config.Layer)
+        instance = Instantiate(prefab, parent)
+        instance.name = uiKey
+        return instance.GetComponent<T>()
+    }
+
+    // 仅从缓存获取（无缓存时返回 null）
+    protected T LoadFromCache()
+    {
+        cached = UIManager.Instance.GetCachedView(Context.UIKey)
+        if cached != null
+            cached.SetActive(true)
+            return cached.GetComponent<T>()
+        return null
+    }
+
+    // === 生命周期钩子（业务层重写）===
     protected internal virtual void OnInit()       { }
     protected internal virtual void OnOpen(args)   { }
     protected internal virtual void OnShown()      { }
     protected internal virtual void OnHide()       { }
     protected internal virtual void OnDispose()    { }
 
-    // --- 辅助方法 ---
+    // === 辅助方法 ===
     protected void CloseSelf()
     {
-        // 通过 UIRegistry 解析 UIKey 后调用 UIManager.Close(uiKey)
-        var uiKey = UIManager.Instance.Registry.ResolveUIKey(this.GetType())
-        UIManager.Instance.Close(uiKey)
+        UIManager.Instance.Close(ResolveUIKey())
     }
 
-    // --- IUIController 显式实现 ---
-    void IUIController.BindContext(UIContext context)
+    // UIKey 解析：类名去掉 "Controller" 后缀
+    string ResolveUIKey()
     {
-        this.Context = context
-        this.View = context.View as T
+        name = GetType().Name
+        return name.EndsWith("Controller") ? name[..^10] : name
     }
+
+    // === IUIController 显式实现 ===
+    void IUIController.BindContext(UIContext context) { Context = context }
+    void IUIController.SetView(UIView view)           { View = view as T }
+
+    // 生命周期转发（internal 到 protected internal）
+    void IUIController.OnInit()    { OnInit() }
+    void IUIController.OnOpen(a)   { OnOpen(a) }
+    void IUIController.OnShown()   { OnShown() }
+    void IUIController.OnHide()    { OnHide() }
+    void IUIController.OnDispose() { OnDispose() }
 }
 
 
@@ -172,29 +212,38 @@ abstract class UIController<T> : IUIController
 // ============================================================
 
 // --- 3a. UIView ---
+// 纯表现层：动画 + 交互控制 + 遮罩
+// 子类在 Awake 中手动绑定组件，无代码生成
 abstract class UIView : MonoBehaviour
 {
-    // 属性
-    UIContext Context                    // 运行时上下文
-    IUIController Controller             // 关联的 Controller（跨池缓存持久化）
+    // === 属性 ===
+    UIContext Context         // 运行时上下文（框架设置）
+    IUIController Controller  // 关联 Controller（跨缓存持久化）
 
-    // --- 交互控制 ---
-    void SetInteractive(bool enabled)    // 控制 CanvasGroup
-    void DisableAllSelectables()         // 快照所有 Selectable，设为不可交互
-    void RestoreSelectables()            // 恢复快照
+    // === 交互控制 ===
+    void SetInteractive(bool enabled)
+        // CanvasGroup.interactable + blocksRaycasts
 
-    // --- 动画（virtual，子类 override 选择策略）---
+    void DisableAllSelectables()
+        // 快照所有 Selectable → 设为不可交互
+        // 入场动画前调用
+
+    void RestoreSelectables()
+        // 恢复快照
+        // 入场动画结束时调用
+
+    // === 动画（virtual，子类 override 选择效果）===
     virtual void PlayEnterAnimation(Action onComplete)
-        // 默认 FadeEnter (淡入 0.3s)
+        // 默认 FadeEnter（淡入 0.3s）
     virtual void PlayExitAnimation(Action onComplete)
-        // 默认 FadeExit (淡出 0.2s)
+        // 默认 FadeExit（淡出 0.2s）
 
-    // --- 内置动画 Helper（子类直接在 override 中调用）---
+    // === 内置动画 Helper（子类直接在 override 中调用）===
     // 淡入淡出
     protected void FadeEnter(Action onComplete, float duration = 0.3f)
     protected void FadeExit(Action onComplete, float duration = 0.2f)
 
-    // 缩放弹性
+    // 缩放弹性（弹到 1.1 再回到 1.0）
     protected void ScaleEnter(Action onComplete, float duration = 0.3f)
     protected void ScaleExit(Action onComplete, float duration = 0.2f)
 
@@ -208,158 +257,156 @@ abstract class UIView : MonoBehaviour
     protected void BlackFadeEnter(Image blackImage, Action onComplete, ...)
     protected void BlackFadeExit(Image blackImage, Action onComplete, ...)
 
-    // --- Popup 遮罩（子类实现）---
+    // === Popup 遮罩（虚方法，子类实现）===
     protected virtual void ShowMask()
     protected virtual void HideMask()
 
-    // --- 框架内部调用 ---
-    void Internal_SetContext(UIContext context)  // 设置 Context
+    // === 框架内部调用 ===
+    void Internal_SetContext(UIContext context) { Context = context }
 }
 
 // --- 3b. UIRoot ---
+// 场景 UI 根节点，管理三个层级容器
 class UIRoot : MonoBehaviour
 {
-    static UIRoot Instance              // 单例
+    static UIRoot Instance   // 单例
 
-    Transform BackgroundLayer          // 各层级父节点
-    Transform NormalLayer
-    Transform PopupLayer
+    Transform BackgroundLayer  // SortingOrder=0
+    Transform NormalLayer      // SortingOrder=100
+    Transform PopupLayer       // SortingOrder=200
 
-    Transform GetLayer(UILayer layer)   // 根据层级返回对应 Transform
+    Transform GetLayer(UILayer layer)
 
     [RuntimeInitializeOnLoadMethod]
     static void Initialize()
     {
-        // 1. 创建 Canvas（ScreenSpaceCamera, SortingOrder 基准）
-        // 2. 为每层创建 GameObject（各自带 Canvas + GraphicRaycaster）
-        // 各层 SortingOrder: Background=0, Normal=100, Popup=200
-        // 3. DontDestroyOnLoad
+        // 创建 [UIRoot] GameObject
+        // 添加 Canvas (ScreenSpaceOverlay, SortingOrder=10000)
+        // 添加 CanvasScaler + GraphicRaycaster
+        // 创建三个层级子节点（各带 Canvas overrideSorting + GraphicRaycaster）
+        // DontDestroyOnLoad
     }
 }
 
 
 // ============================================================
-// 4. MANAGER — 核心调度层
+// 4. SINGLETON — 泛型单例基类
 // ============================================================
 
-// --- 4a. UIRegistry ---
-class UIRegistry
+abstract class Singleton<T> where T : class, new()
 {
-    // ControllerType → UIKey
-    Dictionary<Type, string> _controllerToUIKey
-    // ControllerType → ViewType
-    Dictionary<Type, Type>   _controllerToViewType
+    private static T _instance
+    private static readonly object _lock = new()
 
-    // 启动时统一注册
-    void RegisterAll()
+    static T Instance
     {
-        Register<ShopController>()
-        Register<BagController>()
-        Register<ConfirmPopupController>()
-        // 新增 UI 只需要在这里加一行
-    }
-
-    void Register<TController>()
-        where TController : IUIController
-    {
-        // 1. 获取 typeof(TController)
-        // 2. 遍历基类链，找到 UIController<> 泛型基类
-        // 3. 提取泛型参数 → View 类型
-        // 4. UIKey = ViewType.Name（如 "ShopPanel"）
-        // 5. 存入 _controllerToUIKey 和 _controllerToViewType
-    }
-
-    // 查询
-    string ResolveUIKey(Type controllerType)       // Controller → UIKey
-    Type   GetViewType(Type controllerType)        // Controller → ViewType
-    IEnumerable<string> GetAllUIKeys()              // 所有已注册的 Key（调试用）
-
-    // 创建 Controller 实例
-    IUIController CreateController(Type controllerType)
-    {
-        // 检查是否已注册
-        return Activator.CreateInstance(controllerType) as IUIController
+        get
+        {
+            // 双检锁线程安全
+            if _instance == null
+                lock (_lock)
+                    if _instance == null
+                        _instance = new T()
+            return _instance
+        }
     }
 }
 
-// --- 4b. UIPool ---
-class UIPool
-{
-    // UIKey → Stack<GameObject>
-    Dictionary<string, Stack<GameObject>> _pools
-    const int MAX_PER_KEY = 5
 
-    int TotalCount                             // 总缓存数
+// ============================================================
+// 5. UIMANAGER — 核心管理器
+// ============================================================
 
-    GameObject Get(string key)                 // 从池中取出
-    void       Return(string key, GameObject)  // 归还到池
-    void       Clear()                         // 清理所有
-}
-
-// --- 4c. UIManager（核心）--- 
 class UIManager : Singleton<UIManager>
 {
-    // --- 内部组件 ---
-    UIConfigLoader        ConfigLoader   // 配置加载器
-    UIPool                Pool           // 对象池
+    // === 内部组件 ===
+    UIConfigLoader ConfigLoader  // 配置加载器
 
-    // --- 私有状态 ---
-    Dictionary<string, UIContext> _activeContexts   // 活跃 UI
-    UIContext                     _backgroundContext // 当前 Background
-    List<UIContext>               _normalStack       // Normal 栈
-    UIContext                     _currentPopup      // 当前 Popup
-    Queue<QueueItem>              _queue             // 请求队列
-    const int                     MAX_QUEUE_SIZE = 10
+    // === 核心数据 ===
+    // Controller 持久化（首次创建后常驻）
+    Dictionary<string, IUIController> _controllers
+    // 已调用过 OnInit 的 Controller
+    HashSet<string> _initializedControllers
+    // 活跃 UI Context 字典
+    Dictionary<string, UIContext> _activeContexts
 
-    bool   _isProcessing           // 是否正在处理队列
-    UIContext _enteringContext     // 当前入场通道
-    UIContext _exitingContext      // 当前退场通道
-    bool IsBusy → _enteringContext != null || _exitingContext != null
+    // === 层级管理 ===
+    UIContext           _backgroundContext  // 当前 Background
+    List<UIContext>     _normalStack        // Normal 栈
+    UIContext           _currentPopup       // 当前 Popup
+
+    // === 双通道 ===
+    UIContext _enteringContext  // 入场通道
+    UIContext _exitingContext   // 退场通道
+    bool IsBusy => _enteringContext != null || _exitingContext != null
+
+    // === 请求队列 ===
+    Queue<QueueItem> _queue
+    const int MAX_QUEUE_SIZE = 10
+    bool _isProcessing
+
+    // === 隐藏 View 缓存（替代 UIPool）===
+    // 关闭时 SetActive(false) 缓存，复用减少加载
+    Dictionary<string, GameObject> CachedViews
 
     // ============================================================
     // 对外接口
     // ============================================================
 
-    // 打开
+    // 通过 Controller 类型打开 UI
     void Open<T>(object args = null) where T : IUIController
     {
-        var uiKey = Registry.ResolveUIKey(typeof(T))
-        if uiKey == null → LogError + return
+        uiKey = ResolveUIKey<T>()
         EnqueueOpen(uiKey, args)
     }
 
-    // 按 UIKey 打开（调试/非泛型）
+    // 通过 UIKey 打开（调试用）
     void Open(string uiKey, object args = null)
     {
         EnqueueOpen(uiKey, args)
     }
 
-    // 关闭（泛型）
+    // 通过 Controller 类型关闭 UI
     void Close<T>() where T : IUIController
     {
-        var uiKey = Registry.ResolveUIKey(typeof(T))
+        uiKey = ResolveUIKey<T>()
         Close(uiKey)
     }
 
-    // 关闭（按 Key）
+    // 通过 UIKey 关闭
     void Close(string uiKey)
     {
         // 查 _activeContexts，若 Opened → StartExit(ctx)
     }
 
-    // 紧急关闭所有
+    // 紧急关闭所有 UI
     void CloseAll()
     {
-        // 清空队列 + 取消通道 + 销毁所有活跃 UI + 清空栈 + 清空 Background/Popup 引用
+        // 清空队列 + 重置 _isProcessing
+        // 清理 _enteringContext / _exitingContext
+        // 遍历所有活跃 Context → Closed + OnDispose + Destroy View
+        // 清空 _activeContexts / _normalStack / 层级引用
+        // 清空所有缓存 View（Destroy）
+        // 清空所有持久 Controller
     }
 
-    // 清空对象池
-    void ClearPool() → Pool.Clear()
+    // 清空缓存（手动调用）
+    void ClearCache()
+    {
+        // Destroy 所有 CachedViews 中的 GameObject
+        // CachedViews.Clear()
+    }
 
-    // 调试接口
-    int ActiveCount → _activeContexts.Count
-    IReadOnlyList<UIContext> NormalStack → _normalStack
-    IEnumerable<UIContext> GetAllActiveContexts() → _activeContexts.Values
+    // View 缓存读写（Controller 工具方法调用）
+    GameObject GetCachedView(string uiKey)
+    void CacheView(string uiKey, GameObject go)
+        // go.SetActive(false); CachedViews[uiKey] = go
+
+    // 调试属性
+    int ActiveCount => _activeContexts.Count
+    int CachedViewCount => CachedViews.Count
+    IReadOnlyList<UIContext> NormalStack => _normalStack
+    IEnumerable<UIContext> GetAllActiveContexts() => _activeContexts.Values
 
     // ============================================================
     // 队列调度
@@ -370,100 +417,105 @@ class UIManager : Singleton<UIManager>
         config = ConfigLoader.Get(uiKey)
         if config == null → LogError + return
 
-        // 同一界面已打开 → 直接刷新
-        if _activeContexts 中存在 Opened 的实例
-            → Controller.OnOpen(args) + return
+        // 同一界面已打开（Opened 状态）→ 直接刷新
+        if _activeContexts 中存在 Opened 实例
+            Controller.OnOpen(args) + return
 
-        // 同一界面已在队列中 → 刷新参数（去重）
-        if _queue 中存在同 UIKey 的元素
-            → 更新该元素的 Args + return
+        // 同一界面已在队列中 → 刷新 args（去重）
+        if _queue 中有同 UIKey 元素
+            更新该元素 Args + return
 
-        // 忙 → 入队
+        // 有任务在执行或双通道忙 → 入队
         if _isProcessing || IsBusy
-            if _queue.Count >= MAX_QUEUE_SIZE → 丢弃最旧
-            _queue.Enqueue(new QueueItem(uiKey, args))
+            队满则丢弃最旧
+            _queue.Enqueue(QueueItem(uiKey, args))
             return
 
         // 空闲 → 直接执行
         _isProcessing = true
-        ExecuteOpen(new QueueItem(uiKey, args))
+        ExecuteOpen(QueueItem(uiKey, args))
     }
 
     void ProcessNext()
     {
         if _queue.Count > 0
-            next = _queue.Dequeue()
-            ExecuteOpen(next)
+            ExecuteOpen(_queue.Dequeue())
         else
             _isProcessing = false
     }
 
     // ============================================================
-    // 异步加载 + 入场
+    // 执行打开（异步）
     // ============================================================
 
     async void ExecuteOpen(QueueItem item)
     {
         config = ConfigLoader.Get(item.UIKey)
-        if config == null → LogError + next
-
         ctx = new UIContext(item.UIKey, config)
-        ctx.Cts = new CancellationTokenSource()
         ctx.StateMachine → Loading
         _enteringContext = ctx
 
         try:
-            // 1. 加载 + 实例化（委托给 ResourceLoader）
-            loadResult = await ResourceLoader.LoadAsync(config, ctx.Cts.Token)
-            if loadResult == null → Closed + Cleanup + next
-            if ctx.Cts cancelled → Destroy + Cleanup + next
+            // 1. 获取或持久化 Controller
+            if _controllers 不包含 item.UIKey
+                // 通过反射创建 Controller 实例
+                controller = CreateController($"命名空间.{item.UIKey}Controller")
+                if controller == null → Closed + CleanupAndNext + return
+                _controllers[item.UIKey] = controller
 
-            view = loadResult.View
+            ctx.BindController(controller)
+
+            // 首次 → OnInit
+            if _initializedControllers.Add(item.UIKey)
+                SafeExecute(controller.OnInit)
+
+            // 2. Controller 创建 View
+            view = await controller.CreateViewAsync()
+
+            // 【状态机替代 CancellationToken】检查是否被中断
+            if ctx.StateMachine.CurrentState != UIState.Loading
+                // 被 CloseAll 等中断
+                if view != null → Destroy(view.gameObject)
+                CleanupAndNext(ctx) + return
+
+            if view == null → LogError + Closed + CleanupAndNext + return
+
+            view.Controller = controller
             view.Internal_SetContext(ctx)
+            ctx.SetView(view)
 
-            // 2. 获取或复用 Controller（池中取出的 View 可能已有，首次才创建 + OnInit）
-            controller = view.Controller
-            if controller == null
-                controller = Registry.CreateController(...)
-                if controller != null
-                    view.Controller = controller
-                    ctx.Bind(view, controller)
-                    SafeExecute(controller.OnInit)
-
-            else
-                ctx.Bind(view, controller)
-
-            // 7. 注册到活跃列表
+            // 3. 注册到层级管理
             RegisterContext(ctx)
             ctx.StateMachine → AnimationEnter
 
-            // 8. 入场前准备
+            // 4. 入场前准备
             view.SetInteractive(false)
             view.DisableAllSelectables()
             if config.Layer == Popup → view.ShowMask()
 
-            // 9. 生命周期（每次打开都调用 OnOpen）
+            // 5. 调用 OnOpen
             SafeExecute(controller.OnOpen(item.Args))
 
-            // 10. 入场动画
-            tcs = UniTaskCompletionSource
-            view.PlayEnterAnimation(() → tcs.TrySetResult())
-            await tcs.Task.AttachExternalCancellation(ct)
-            if ct cancelled → CleanupAndNext + return
+            // 6. 入场动画（等待完成）
+            animTcs = UniTaskCompletionSource
+            view.PlayEnterAnimation(() → animTcs.TrySetResult())
+            await animTcs.Task
 
-            // 11. 动画结束 → Opened
+            // 【状态机检查】动画期间是否被中断
+            if ctx.StateMachine.CurrentState != UIState.AnimationEnter
+                CleanupAndNext(ctx) + return
+
+            // 7. Opened
             ctx.StateMachine → Opened
             view.RestoreSelectables()
             view.SetInteractive(true)
             ctx.OpenTime = Time.time
             SafeExecute(controller.OnShown)
 
-        catch OperationCanceledException → 正常取消，忽略
-        catch Exception e → LogError + CleanupAndNext + return
+        catch Exception e → LogError + CleanupAndNext(ctx) + return
 
         finally:
             _enteringContext = null
-            ctx.Cts.Dispose()
             ProcessNext()
     }
 
@@ -488,9 +540,8 @@ class UIManager : Singleton<UIManager>
 
             ctx.StateMachine → Closed
 
-            // 不调 OnDispose — Controller 随 View 留在池中复用
-            ctx.View.gameObject.SetActive(false)
-            Pool.Return(ctx.UIKey, ctx.View.gameObject)
+            // 不销毁 View，隐藏缓存
+            CacheView(ctx.UIKey, ctx.View.gameObject)
 
         catch Exception e → LogError
 
@@ -511,10 +562,8 @@ class UIManager : Singleton<UIManager>
 
         switch ctx.Config.Layer:
             Background:
-                // 关闭其上所有 Normal 和 Popup
-                CloseAllNormalAndPopup()
-                // 替换当前 Background
-                if _backgroundContext != null && _backgroundContext != ctx
+                CloseAllNormalAndPopup()  // 弹出其上所有
+                if _backgroundContext != null && != ctx
                     StartExit(_backgroundContext)
                 _backgroundContext = ctx
 
@@ -525,8 +574,7 @@ class UIManager : Singleton<UIManager>
                 _normalStack.Add(ctx)
 
             Popup:
-                // 替换当前 Popup
-                if _currentPopup != null && _currentPopup != ctx
+                if _currentPopup != null && != ctx
                     StartExit(_currentPopup)
                 _currentPopup = ctx
                 ctx.PreviousContext = _normalStack 栈顶（可为 null）
@@ -536,245 +584,254 @@ class UIManager : Singleton<UIManager>
     {
         _activeContexts.Remove(ctx.UIKey)
         switch ctx.Config.Layer:
-            Background → _backgroundContext 置 null（如果相等）
+            Background → _backgroundContext = null (if equal)
             Normal     → _normalStack.Remove(ctx)
-            Popup      → _currentPopup 置 null（如果相等）
+            Popup      → _currentPopup = null (if equal)
     }
 
     void RestorePreviousNormal()
     {
         if _normalStack 不为空
             栈顶 Normal 且状态为 Opened
-                → Controller.OnShown + view.SetInteractive(true)
+                → Controller.OnShown + SetInteractive(true)
     }
 
     void CloseAllNormalAndPopup()
     {
-        // 关闭当前 Popup
-        if _currentPopup != null && _currentPopup 状态为 Opened
-            StartExit(_currentPopup)
-        _currentPopup = null
+        // 关闭当前 Popup → 关闭所有 Normal → 清空栈
+    }
 
-        // 关闭所有 Normal
-        foreach normal in _normalStack (copy)
-            if normal 状态为 Opened
-                StartExit(normal)
-        _normalStack.Clear()
+    // ============================================================
+    // 辅助方法
+    // ============================================================
+
+    string ResolveUIKey<T>() where T : IUIController
+    {
+        name = typeof(T).Name
+        return name.EndsWith("Controller") ? name[..^10] : name
+    }
+
+    IUIController CreateController(string typeName)
+    {
+        // Type.GetType(typeName) → Activator.CreateInstance → as IUIController
+    }
+
+    void SafeExecute(Action action, string context)
+    {
+        // try-catch，异常时 LogError
+    }
+
+    void CleanupAndNext(UIContext ctx)
+    {
+        ctx.Dispose()
+        UnregisterContext(ctx)
+        _enteringContext = null
+        ProcessNext()
+    }
+
+    // === 内部类 ===
+    class QueueItem
+    {
+        string UIKey
+        object Args { get; set }
     }
 }
 
 
 // ============================================================
-// 5. CONFIG — 配置加载器
+// 6. UIResourceLoader — 资源管理器
+// ============================================================
+
+class UIResourceLoader : Singleton<UIResourceLoader>
+{
+    // 职责：仅从 Resources 异步加载 Prefab，返回原始 GameObject
+    // 不负责实例化、不负责缓存、不负责对象池
+    async UniTask<GameObject> LoadPrefabAsync(string prefabPath)
+    {
+        if string.IsNullOrEmpty(prefabPath) → LogError + return null
+
+        // 超时看门狗（5秒仅日志警告）
+        TimeoutGuard(prefabPath, 5f).Forget()
+
+        req = Resources.LoadAsync<GameObject>(prefabPath)
+        await req.ToUniTask()
+
+        if req.asset == null → LogError + return null
+        return req.asset as GameObject
+    }
+
+    async UniTaskVoid TimeoutGuard(string path, float timeout)
+    {
+        await UniTask.Delay(timeout * 1000)
+        DebugLogWarning($"加载超过 {timeout}s")
+    }
+
+    // 未来可继承重写：Addressables / AssetBundle 等
+}
+
+
+// ============================================================
+// 7. UIConfigLoader — 配置加载器
 // ============================================================
 
 class UIConfigLoader
 {
     Dictionary<string, UIItemConfig> _configMap
 
-    // 从外部 List<UIItemConfig> 加载
     void Load(List<UIItemConfig> configs)
-    {
-        foreach config in configs
-            _configMap[config.UIKey] = config
-    }
-
-    // 按 Key 查找
+        // 清空 → 逐条存入 _configMap
     UIItemConfig Get(string uiKey)
-        → _configMap.TryGet(uiKey)
-
-    // 获取所有 Key
-    IEnumerable<string> GetAllKeys()
-        → _configMap.Keys
-
-    // 运行时热重载
+        // _configMap.TryGetValue
+    string[] GetAllKeys()
+        // _configMap.Keys 复制
     void Reload(List<UIItemConfig> configs)
-    {
-        _configMap.Clear()
-        Load(configs)
-    }
+        // Load(configs)
 }
 
 
 // ============================================================
-// 7. RESOURCE LOADER — 资源加载器
+// 8. UIEditorWindow — 编辑器调试窗口
 // ============================================================
 
-class UIResourceLoader : Singleton<UIResourceLoader>
-{
-    // 对象池引用（通过 UIManager 单例获取）
-    UIPool Pool => UIManager.Instance.Pool
-
-    // 异步加载 + 实例化 UI
-    async UniTask<UIResourceLoadResult> LoadAsync(UIItemConfig config, CancellationToken ct)
-    {
-        // 1. 优先从池获取
-        go = Pool.Get(config.UIKey)
-        if go != null → return InstantiateUI(go, config)
-
-        // 2. 异步加载 Prefab
-        go = await LoadPrefabAsync(config, ct)
-        if go == null || ct cancelled → return null
-
-        // 3. 实例化
-        return InstantiateUI(go, config)
-    }
-
-    // 异步加载 Prefab（可被子类重写，支持 Addressables / AssetBundle）
-    protected virtual async UniTask<GameObject> LoadPrefabAsync(UIItemConfig config, CancellationToken ct)
-    {
-        // req = Resources.LoadAsync<GameObject>(config.PrefabPath)
-        // await req.ToUniTask(cancellationToken: ct)
-        // 5s 超时看门狗：TimeoutGuard(config.UIKey, 5f).Forget()
-    }
-
-    // 实例化 + 获取 UIView
-    protected virtual UIResourceLoadResult InstantiateUI(GameObject prefab, UIItemConfig config)
-    {
-        instance = Instantiate(prefab, UIRoot.Instance.GetLayer(config.Layer))
-        view = instance.GetComponent<UIView>()
-        return new UIResourceLoadResult { Instance = instance, View = view }
-    }
-}
-
-// 加载结果
-class UIResourceLoadResult
-{
-    GameObject Instance
-    UIView     View
-}
-
-
-// ============================================================
-// 8. EDITOR — 编辑器工具
-// ============================================================
-
-// --- 8a. UIEditorWindow（调试窗口）---
 class UIEditorWindow : EditorWindow
 {
-    [MenuItem("UIFrameworkLib/UI Debugger")]
-    static void Open()
-
-    void OnGUI()
-    {
-        // 标题：UIFrameworkLib Debugger
-
-        // 当前活跃 UI 列表
-        //   UIKey | State | Layer | OpenTime | Actions[Close]
-        //   遍历 UIManager.GetAllActiveContexts()
-
-        // Normal 栈
-        //   遍历 UIManager.NormalStack → UIKey
-
-        // 对象池统计
-        //   总缓存数: UIManager.Pool.TotalCount
-
-        // 操作按钮
-        //   [CloseAll] [ClearPool]
-
-        // 手动打开 UI
-        //   下拉框选择 UIKey（从 Registry.GetAllUIKeys() 获取）
-        //   [Open] 按钮
-
-        // 自动刷新（EditorApplication.update += Repaint）
-    }
+    // 菜单 UIFrameworkLib/UI Debugger
+    // 显示：
+    //   - 所有活跃 UI（状态 + 层级 + 打开时间）
+    //   - Normal 栈
+    //   - 缓存 View 统计
+    // 操作按钮：
+    //   - CloseAll
+    //   - ClearCache
+    //   - 打开指定 UI（下拉选择 UIKey）
 }
 
 
 // ============================================================
-// 8. 启动流程（UIBootstrapper）
+// 9. 业务层使用示例
 // ============================================================
 
-[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-static void Bootstrap()
-{
-    // 1. 初始化 UIRoot（创建 Canvas + 层级节点）
-    UIRoot.Initialize()
-
-    // 2. 注册所有 UI 映射
-    UIManager.Instance.Registry.RegisterAll()
-
-    // 3. 加载配置（外部适配：Luban / ScriptableObject / JSON → List&lt;UIItemConfig&gt;）
-    var configs = ExternalConfigAdapter.LoadUIItemConfigs()
-    UIManager.Instance.ConfigLoader.Load(configs)
-
-    Debug.Log("[UIFrameworkLib] 启动完成")
-}
-
-
-// ============================================================
-// 9. 业务使用示例
-// ============================================================
-
-// --- 9a. 定义 View ---
-// ShopView.cs
+// --- 9a. ShopView（表现层）---
 class ShopView : UIView
 {
     Button m_BtnClose
-    Text   m_TxtGold
+    Text   m_TitleText
     Transform m_ItemRoot
 
-    override void Awake()
+    // 手动绑定组件
+    void Awake()
     {
-        // 手动绑定组件
-        m_BtnClose = transform.Find("BtnClose").GetComponent<Button>()
-        m_TxtGold  = transform.Find("TxtGold").GetComponent<Text>()
-        m_ItemRoot = transform.Find("ItemRoot")
+        m_BtnClose  = transform.Find("BtnClose").GetComponent<Button>()
+        m_TitleText = transform.Find("Title").GetComponent<Text>()
+        m_ItemRoot  = transform.Find("ItemList")
     }
+
+    // 选择动画效果
+    override void PlayEnterAnimation(Action onComplete)
+        ScaleEnter(onComplete, 0.35f)   // 缩放弹入
+
+    override void PlayExitAnimation(Action onComplete)
+        FadeExit(onComplete, 0.15f)     // 淡出
+
+    // View 层提供 UI 更新接口
+    void SetTitle(string text) => m_TitleText.text = text
 }
 
-// --- 9b. 定义 Controller ---
-// ShopController.cs
+// --- 9b. ShopController（逻辑层）---
 class ShopController : UIController<ShopView>
 {
+    // 创建 View
+    override async UniTask<ShopView> CreateViewAsync()
+        return await LoadFromResources("Prefabs/UI/ShopPanel")
+
+    // 初始化（仅一次）
     override void OnInit()
     {
         View.m_BtnClose.onClick.AddListener(CloseSelf)
     }
 
+    // 每次打开
     override void OnOpen(object args)
     {
-        int categoryId = (int)(args ?? 0)
-        RefreshUI(categoryId)
+        categoryId = (int)args  // 参数
+        View.SetTitle($"商店 - 分类{categoryId}")
+        // 加载商品数据...
     }
 
-    override void OnDispose()
-    {
-        View.m_BtnClose.onClick.RemoveAllListeners()
-    }
+    // 入场结束
+    override void OnShown() { }
 
-    void RefreshUI(int categoryId)
-    {
-        View.m_TxtGold.text = PlayerData.Gold.ToString()
-    }
+    // 退场开始
+    override void OnHide() { }
 }
 
-// --- 9c. 调用 ---
-void GameStart()
-{
-    // 打开商店（打开后调入道具列表）
-    UIManager.Instance.Open<ShopController>(categoryId: 1)
+// --- 9c. 调用方使用 ---
+// 启动时加载配置
+UIConfigLoader loader = UIManager.Instance.ConfigLoader
+loader.Load(new List<UIItemConfig>{
+    new() { UIKey = "Shop", PrefabPath = "Prefabs/UI/ShopPanel", Layer = UILayer.Normal },
+    new() { UIKey = "Bag",  PrefabPath = "Prefabs/UI/BagPanel",  Layer = UILayer.Normal },
+    new() { UIKey = "ConfirmPopup", PrefabPath = "Prefabs/UI/ConfirmPopup", Layer = UILayer.Popup },
+})
 
-    // 打开背包（连续打开，自动排队）
-    UIManager.Instance.Open<BagController>()
+// 打开
+UIManager.Instance.Open<ShopController>()           // 无参数
+UIManager.Instance.Open<ShopController>(args: 1)    // 有参数
 
-    // 弹出确认对话框（等待上一个界面完全关闭后出现）
-    UIManager.Instance.Open<ConfirmPopupController>()
+// 关闭
+UIManager.Instance.Close<ShopController>()
 
-    // 关闭商店
-    UIManager.Instance.Close<ShopController>()
+// 紧急关闭
+UIManager.Instance.CloseAll()
 
-    // 关闭所有（场景转换时）
-    UIManager.Instance.CloseAll()
-}
+// 清空缓存
+UIManager.Instance.ClearCache()
 
 
 // ============================================================
-// 附录：队列元素
+// 10. 生命周期流程图
 // ============================================================
 
-class QueueItem
-{
-    string    UIKey
-    object    Args { get; set; }   // 可更新（去重时刷新参数）
-}
+// === 打开流程 ===
+// EnqueueOpen(uiKey, args)
+//   ├─ 已打开（Opened）→ 直接刷新 OnOpen(args)
+//   ├─ 已在队列 → 刷新 args
+//   ├─ 队列忙 → 入队等待
+//   └─ 空闲 → 执行
+//
+// ExecuteOpen(item):
+//   1. 创建 UIContext, 状态 → Loading
+//   2. 获取/创建 Controller（持久化，首次 OnInit）
+//   3. Controller.CreateViewAsync()
+//      ├─ 检查缓存 → 复用
+//      └─ 异步加载 Prefab → 实例化
+//   4. 【状态检查】是否仍为 Loading？
+//   5. RegisterContext → 层级管理
+//   6. 状态 → AnimationEnter
+//   7. 禁用 Selectable + 遮罩(Popup)
+//   8. OnOpen(args)
+//   9. PlayEnterAnimation → await
+//   10. 【状态检查】是否仍为 AnimationEnter？
+//   11. 状态 → Opened
+//   12. 恢复 Selectable + SetInteractive(true)
+//   13. OnShown()
+//   14. _enteringContext = null
+//   15. ProcessNext()
+
+// === 关闭流程 ===
+// StartExit(ctx):
+//   1. 检查状态必须是 Opened
+//   2. 状态 → AnimationExit
+//   3. OnHide()
+//   4. SetInteractive(false)
+//   5. PlayExitAnimation → await
+//   6. 状态 → Closed
+//   7. CacheView (SetActive(false)，不销毁)
+//   8. UnregisterContext
+//   9. RestorePreviousNormal（若有）
+//   10. _exitingContext = null
+//   11. ProcessNext()
+
+// === 关闭全部 ===
+// CloseAll():
+//   清空队列 + 清空通道 + Destroy 所有活跃 UI + 清空缓存 + 清空 Controller
