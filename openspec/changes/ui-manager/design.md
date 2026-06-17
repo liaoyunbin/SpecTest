@@ -113,14 +113,25 @@ Closed   Closed        Closed      (中断/失败紧急回退)
 public abstract class UIView : MonoBehaviour
 {
     // === 子类重写 ===
-    public virtual UniTask PlayEnterAnimation()
+    public virtual void PlayEnterAnimation()
     {
-        return AnimationFactory.PlayEnter(UIAnimationType.Fade, (RectTransform)transform, 0.3f);
+        AnimationFactory.GetStrategy(UIAnimationType.Fade).Enter((RectTransform)transform);
     }
 
-    public virtual UniTask PlayExitAnimation()
+    public virtual void PlayExitAnimation()
     {
-        return AnimationFactory.PlayExit(UIAnimationType.Fade, (RectTransform)transform, 0.2f);
+        AnimationFactory.GetStrategy(UIAnimationType.Fade).Exit((RectTransform)transform);
+    }
+
+    // === 时长获取 ===
+    public virtual int GetEnterAnimationDurationMs()
+    {
+        return AnimationFactory.GetStrategy(UIAnimationType.Fade).EnterDurationMs;
+    }
+
+    public virtual int GetExitAnimationDurationMs()
+    {
+        return AnimationFactory.GetStrategy(UIAnimationType.Fade).ExitDurationMs;
     }
 
     // === 交互控制 ===
@@ -131,8 +142,10 @@ public abstract class UIView : MonoBehaviour
 
 | 方法 | 说明 |
 |------|------|
-| `PlayEnterAnimation()` | 入场动画（virtual，默认淡入 0.3s），返回 UniTask |
-| `PlayExitAnimation()` | 退场动画（virtual，默认淡出 0.2s），返回 UniTask |
+| `PlayEnterAnimation()` | 入场动画（virtual，void） |
+| `PlayExitAnimation()` | 退场动画（virtual，void） |
+| `GetEnterAnimationDurationMs()` | 获取当前策略的入场动画时长（毫秒） |
+| `GetExitAnimationDurationMs()` | 获取当前策略的退场动画时长（毫秒） |
 | `SetInteractive(bool)` | CanvasGroup 级别 interactable + blocksRaycasts |
 | `IsInteractable` (bool 属性) | 框架设置的交互许可标记，业务层在按钮回调中自行判断 |
 
@@ -203,8 +216,17 @@ public abstract class UIController<T> : IUIController where T : UIView
         view.IsInteractable = false;
         view.SetInteractive(false);
 
-        await view.PlayEnterAnimation();
-
+        try
+        {
+            // 先播放动画（fire-and-forget）
+            view.PlayEnterAnimation();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[UIController] Enter 异常: {e}");
+        }
+        // 再等待动画策略时长
+        await UniTask.Delay(view.GetEnterAnimationDurationMs());
         return IsInAnimation;  // false = 中途被中断
     }
 
@@ -218,9 +240,17 @@ public abstract class UIController<T> : IUIController where T : UIView
         view.IsInteractable = false;
         OnHide();
         view.SetInteractive(false);
-
-        await view.PlayExitAnimation();
-
+        try
+        {
+            // 先播放动画
+            view.PlayExitAnimation();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[UIController] Enter 异常: {e}");
+        }
+        // 再等待动画策略时长
+        await UniTask.Delay(view.GetExitAnimationDurationMs());
         TryTransition(UIState.Closed);
         view.gameObject.SetActive(false);
     }
@@ -733,8 +763,10 @@ public enum UIAnimationType
 ```csharp
 public interface IAnimationStrategy
 {
-    UniTask Enter(RectTransform target, float duration);
-    UniTask Exit(RectTransform target, float duration);
+    int EnterDurationMs { get; }
+    int ExitDurationMs { get; }
+    void Enter(RectTransform target);
+    void Exit(RectTransform target);
 }
 ```
 
@@ -747,17 +779,7 @@ public static class AnimationFactory
 {
     private static readonly Dictionary<UIAnimationType, IAnimationStrategy> _cache = new();
 
-    public static UniTask PlayEnter(UIAnimationType type, RectTransform target, float duration)
-    {
-        return GetStrategy(type).Enter(target, duration);
-    }
-
-    public static UniTask PlayExit(UIAnimationType type, RectTransform target, float duration)
-    {
-        return GetStrategy(type).Exit(target, duration);
-    }
-
-    private static IAnimationStrategy GetStrategy(UIAnimationType type)
+    public static IAnimationStrategy GetStrategy(UIAnimationType type)
     {
         if (!_cache.TryGetValue(type, out var strategy))
         {
@@ -777,7 +799,24 @@ public static class AnimationFactory
 }
 ```
 
-### 10.5 动画策略类
+**使用方式：**
+```csharp
+// 直接获取策略调用
+var strategy = AnimationFactory.GetStrategy(UIAnimationType.Fade);
+strategy.Enter((RectTransform)transform);
+int durationMs = strategy.EnterDurationMs;
+```
+
+### 10.5 公共工具
+
+```csharp
+public static class AnimUtils
+{
+    public static float MsToSeconds(int ms) => ms / 1000f;
+}
+```
+
+### 10.6 动画策略类
 
 **目录：** `Animation/Strategies/`
 
@@ -795,39 +834,44 @@ public static class AnimationFactory
 ```csharp
 public class FadeStrategy : IAnimationStrategy
 {
-    public async UniTask Enter(RectTransform target, float duration)
+    public int EnterDurationMs => 300;
+    public int ExitDurationMs => 200;
+
+    public void Enter(RectTransform target)
     {
         var cg = target.GetComponent<CanvasGroup>();
         if (cg == null) return;
         cg.alpha = 0f;
+        float duration = AnimUtils.MsToSeconds(EnterDurationMs);
         var elapsed = 0f;
         while (elapsed < duration)
         {
             elapsed += Time.deltaTime;
             cg.alpha = Mathf.Lerp(0f, 1f, elapsed / duration);
-            await UniTask.Yield(PlayerLoopTiming.Update);
+            UniTask.Yield(PlayerLoopTiming.Update);
         }
         cg.alpha = 1f;
     }
 
-    public async UniTask Exit(RectTransform target, float duration)
+    public void Exit(RectTransform target)
     {
         var cg = target.GetComponent<CanvasGroup>();
         if (cg == null) return;
         cg.alpha = 1f;
+        float duration = AnimUtils.MsToSeconds(ExitDurationMs);
         var elapsed = 0f;
         while (elapsed < duration)
         {
             elapsed += Time.deltaTime;
             cg.alpha = Mathf.Lerp(1f, 0f, elapsed / duration);
-            await UniTask.Yield(PlayerLoopTiming.Update);
+            UniTask.Yield(PlayerLoopTiming.Update);
         }
         cg.alpha = 0f;
     }
 }
 ```
 
-### 10.6 使用方式
+### 10.7 使用方式
 
 ```csharp
 // UIView 子类
@@ -835,7 +879,7 @@ public class ShopView : UIView
 {
     public override UniTask PlayEnterAnimation()
     {
-        return AnimationFactory.PlayEnter(UIAnimationType.Scale, (RectTransform)transform, 0.35f);
+        return AnimationFactory.PlayEnter(UIAnimationType.Scale, (RectTransform)transform);
     }
 }
 ```
