@@ -464,8 +464,9 @@ public class UIManager : Singleton<UIManager>
 
         try
         {
-            if (!await LoadView(ctrl)) return;
-            if (ctrl.PendingClose) { AbortToCache(key, ctrl); return; }
+            if (!await GetOrCreateView(ctrl)) { AbortOpen(ctrl); return; }
+            if (!ctrl.IsLoading) { Object.Destroy(ctrl.View.gameObject); return; }
+            if (ctrl.PendingClose) { ctrl.View.gameObject.SetActive(false); ctrl.TryTransition(UIState.Closed); return; }
 
             Activate(ctrl);
             if (!await ctrl.EnterAsync()) return;
@@ -490,14 +491,6 @@ public class UIManager : Singleton<UIManager>
     // ================================================================
     // 9.4 阶段方法
     // ================================================================
-
-    /// <returns>是否继续</returns>
-    private async Task<bool> LoadView(IUIController ctrl)
-    {
-        if (!await GetOrCreateView(ctrl)) { AbortOpen(ctrl); return false; }
-        if (!ctrl.IsLoading) { DestroyView(ctrl); return false; }
-        return true;
-    }
 
     /// <summary>获取或创建 View，并完成初始化</summary>
     private async UniTask<bool> GetOrCreateView(IUIController ctrl)
@@ -564,7 +557,14 @@ public class UIManager : Singleton<UIManager>
     private void OnExitCleanup(IUIController ctrl)
     {
         _stacks[ctrl.Layer].Pop();
-        RestorePreviousNormal();
+
+        // 恢复上一个 Normal 层的交互
+        if (_stacks[UILayer.Normal].Count > 0)
+        {
+            var top = _stacks[UILayer.Normal].Peek();
+            if (top.IsOpened) top.View.SetInteractive(true);
+        }
+
         ProcessQueue();
     }
 
@@ -600,13 +600,20 @@ public class UIManager : Singleton<UIManager>
         switch (ctrl.Layer)
         {
             case UILayer.Background:
-                CloseAllNormalAndPopup();
+                if (_stacks[UILayer.Popup].Count > 0)
+                    StartExit(_stacks[UILayer.Popup].Peek());
+                foreach (var n in _stacks[UILayer.Normal].ToArray())
+                    StartExit(n);
+                _stacks[UILayer.Normal].Clear();
+                _stacks[UILayer.Popup].Clear();
                 if (_stacks[UILayer.Background].Count > 0)
                     StartExit(_stacks[UILayer.Background].Peek());
                 _stacks[UILayer.Background].Push(ctrl);
                 break;
             case UILayer.Normal:
-                CloseAllPopup();
+                if (_stacks[UILayer.Popup].Count > 0)
+                    StartExit(_stacks[UILayer.Popup].Peek());
+                _stacks[UILayer.Popup].Clear();
                 if (_stacks[UILayer.Normal].Count > 0) _stacks[UILayer.Normal].Peek().OnHide();
                 _stacks[UILayer.Normal].Push(ctrl);
                 break;
@@ -619,35 +626,6 @@ public class UIManager : Singleton<UIManager>
         ctrl.TryTransition(UIState.AnimationEnter);
     }
 
-    private void RestorePreviousNormal()
-    {
-        if (_stacks[UILayer.Normal].Count > 0)
-        {
-            var top = _stacks[UILayer.Normal].Peek();
-            if (top.IsOpened)
-            {
-                top.View.SetInteractive(true);
-            }
-        }
-    }
-
-    private void CloseAllNormalAndPopup()
-    {
-        if (_stacks[UILayer.Popup].Count > 0)
-            StartExit(_stacks[UILayer.Popup].Peek());
-        foreach (var n in _stacks[UILayer.Normal].ToArray())
-            StartExit(n);
-        _stacks[UILayer.Normal].Clear();
-        _stacks[UILayer.Popup].Clear();
-    }
-
-    private void CloseAllPopup()
-    {
-        if (_stacks[UILayer.Popup].Count > 0)
-            StartExit(_stacks[UILayer.Popup].Peek());
-        _stacks[UILayer.Popup].Clear();
-    }
-
     private void ProcessQueue()
     {
         if (_queue.Count == 0) return;
@@ -655,46 +633,24 @@ public class UIManager : Singleton<UIManager>
         var next = _queue.Peek();
         var topUI = GetTopMostUI();
 
-        // WaitForAnimation: 上一个动画结束即可执行（无顶层或顶层不在动画中）
-        if (next.Mode == QueueMode.WaitForAnimation)
+        bool canProcess = next.Mode switch
         {
-            if (topUI == null || !topUI.IsInAnimation)
-            {
-                _queue.Dequeue();
-                StartOpening(next.ControllerType, next.Args);
-            }
-            return;
-        }
+            QueueMode.WaitForAnimation => topUI == null || !topUI.IsInAnimation,
+            QueueMode.WaitForClose     => topUI == null,
+            _                          => true,
+        };
 
-        // WaitForClose: 必须等上一个完全关闭（无顶层UI）
-        if (next.Mode == QueueMode.WaitForClose)
+        if (canProcess)
         {
-            if (topUI == null)
-            {
-                _queue.Dequeue();
-                StartOpening(next.ControllerType, next.Args);
-            }
-            return;
+            _queue.Dequeue();
+            StartOpening(next.ControllerType, next.Args);
         }
     }
 
-    /// <summary>加载完成但 PendingClose → 直接隐藏，不弹出</summary>
-    private void AbortToCache(Type key, IUIController ctrl)
-    {
-        ctrl.View.gameObject.SetActive(false);
-        ctrl.TryTransition(UIState.Closed);
-    }
-
-    /// <summary>加载或动画异常 → 销毁 View</summary>
+    /// <summary>异常时销毁 View 并释放</summary>
     private void AbortOpen(IUIController ctrl)
     {
         ctrl.OnDispose();
-        if (ctrl.View != null) Object.Destroy(ctrl.View.gameObject);
-    }
-
-    private void DestroyView(IUIController ctrl)
-    {
-        ctrl.TryTransition(UIState.Closed);
         if (ctrl.View != null) Object.Destroy(ctrl.View.gameObject);
     }
 
@@ -712,21 +668,21 @@ public class UIManager : Singleton<UIManager>
 ```
 Open<T>(args)
   └─┬─ 已 Opened → OnOpen(args)  // 刷新，清除 PendingClose
-    ├─ 忙         → 入队(上限5)   // 等待
+    ├─ 忙         → 入队          // 等待
     └─ 空闲       → StartOpening  // 立即执行
 
 StartOpening:
-  LoadView → if PendingClose → AbortToCache(缓存,不弹出)
+  GetOrCreateView → if PendingClose → 隐藏缓存
   Activate → Push 到 _stacks[layer]
-  PlayEnter → if PendingClose → StartExit(退场)
+  EnterAsync → if PendingClose → StartExit(退场)
   Opened → OnOpen(args)
 
 Close<T>:
-  已 Opened → StartExit → Pop + 缓存 View
+  已 Opened → StartExit → Pop + 恢复 Normal 交互 + 队列调度
   加载/动画中 → PendingClose = true
 
 CloseAll:
-  清队列 + 三层栈全遍历 Destroy + 清缓存 + 清 Registry
+  清队列 + 三层栈全遍历隐藏缓存
 ```
 
 ---
