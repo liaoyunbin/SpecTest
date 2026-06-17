@@ -28,32 +28,34 @@ namespace UIFrameworkLib
         public abstract UILayer Layer { get; }
 
         // === IUIController 显式实现 ===
-
+		public void ChangeState(UIState state)
+		{
+			UIState oldState;
+			switch (state)
+			{
+				case UIState.Opened:
+					break;
+			}
+		}
 
         // === 生命周期编排 ===
         public virtual async UniTask<bool> EnterAsync()
         {
             TryTransition(UIState.AnimationEnter);
-
             var view = View;
             view.IsInteractable = false;
             view.SetInteractive(false);
-
             try
             {
-                // 先播放动画（fire-and-forget）
+                // 先播放动画
                 view.PlayEnterAnimation();
-                // 再等待动画策略时长
-                await UniTask.Delay(
-                    TimeSpan.FromMilliseconds(AnimUtils.MsToSeconds(
-                        view.GetEnterAnimationDurationMs() + 500)));
             }
             catch (Exception e)
             {
                 Debug.LogError($"[UIController] Enter 异常: {e}");
             }
-
-            return IsInAnimation; // false = 中途被中断
+			await UniTask.Delay(view.GetEnterAnimationDurationMs());
+			return IsInAnimation; // false = 中途被中断
         }
 
         public virtual async UniTask ExitAsync()
@@ -69,19 +71,15 @@ namespace UIFrameworkLib
 
             try
             {
-                // 先播放动画（fire-and-forget）
-                view.PlayExitAnimation();
-                // 再等待动画策略时长
-                await UniTask.Delay(
-                    TimeSpan.FromMilliseconds(AnimUtils.MsToSeconds(
-                        view.GetExitAnimationDurationMs() + 500)));
+                // 先播放动画
+                view.PlayExitAnimation();         
             }
             catch (Exception e)
             {
                 Debug.LogError($"[UIController] Exit 异常: {e}");
             }
-
-            TryTransition(UIState.Closed);
+			await UniTask.Delay(view.GetExitAnimationDurationMs());
+			TryTransition(UIState.Closed);
             view.gameObject.SetActive(false);
         }
 

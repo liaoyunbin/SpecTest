@@ -1,336 +1,235 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
 namespace UIFrameworkLib
 {
-    /// <summary>
-    /// UIManager — UI 框架核心管理器
-    ///
-    /// 职责：
-    /// - 提供 Open<T>() / Close<T>() 对外接口
-    /// - 三层栈管理（Background / Normal / Popup）
-    /// - 队列调度（N 个排队）
-    /// - 层级仲裁
-    /// - View 加载 / 缓存
-    ///
-    /// 使用方式：
-    /// <code>
-    /// UIManager.Instance.Open&lt;ShopController&gt;();
-    /// UIManager.Instance.Close&lt;ShopController&gt;();
-    /// </code>
-    /// </summary>
-    public class UIManager : Singleton<UIManager>
-    {
-        // ================================================================
-        // 字段
-        // ================================================================
+	/// <summary>
+	/// UIManager — UI 框架核心管理器
+	///
+	/// 职责：
+	/// - 提供 Open<T>() / Close<T>() 对外接口
+	/// - 三层栈管理（Background / Normal / Popup）
+	/// - 队列调度（N 个排队）
+	/// - 层级仲裁
+	/// - View 加载 / 缓存
+	///
+	/// 使用方式：
+	/// <code>
+	/// UIManager.Instance.Open&lt;ShopController&gt;();
+	/// UIManager.Instance.Close&lt;ShopController&gt;();
+	/// </code>
+	/// </summary>
+	public class UIManager : Singleton<UIManager>
+	{
+		private readonly Dictionary<UILayer, Stack<UIController>> _stacks = new()
+		{
+			[UILayer.Background] = new(),
+			[UILayer.Normal] = new(),
+			[UILayer.Popup] = new(),
+		};
 
-        private readonly Dictionary<UILayer, Stack<UIController>> _stacks = new()
-        {
-            [UILayer.Background] = new(),
-            [UILayer.Normal]     = new(),
-            [UILayer.Popup]      = new(),
-        };
+		#region public function
+		private UIController GetTopMostUI()
+		{
+			if (_stacks[UILayer.Popup].Count > 0)
+				return _stacks[UILayer.Popup].Peek();
+			if (_stacks[UILayer.Normal].Count > 0)
+				return _stacks[UILayer.Normal].Peek();
+			if (_stacks[UILayer.Background].Count > 0)
+				return _stacks[UILayer.Background].Peek();
+			return null;
+		}
 
-        private readonly Queue<QueueItem> _queue = new();
+		/// <summary>通过 Type 查找 Controller</summary>
+		private UIController FindController(Type key)
+		{
+			return UIControllerRegistry.GetController(key);
+		}
+		/// <summary>
+		/// 关闭所有UI
+		/// </summary>
+		public void CloseAllUI()
+		{
+			// 按弹窗→正常→背景顺序关闭
+			LayerClearAndPopTopUI(UILayer.Popup);
+			LayerClearAndPopTopUI(UILayer.Normal);
+			LayerClearAndPopTopUI(UILayer.Background);
+		}
 
-        // ================================================================
-        // 公开属性
-        // ================================================================
+		/// <summary>
+		/// 打开UI（统一接口）
+		/// 自动处理栈逻辑
+		/// </summary>
+		public void OpenUI<T>(params object[] args) where T : UIController
+		{
+			T enterUI = GetController<T>();
+			UILayer enterLayer = enterUI.layer;
+			Stack<UIController> stack = _stacks[enterLayer];
 
-        /// <summary>当前是否忙碌（最顶层 UI 正在加载或动画中）</summary>
-        public bool IsBusy
-        {
-            get
-            {
-                var top = GetTopMostUI();
-                return top != null && (top.IsLoading || top.IsInAnimation);
-            }
-        }
+			switch (enterLayer)
+			{
+				case UILayer.Background: // A层：替换逻辑
+					LayerClearAndPopTopUI(UILayer.Popup);
+					LayerClearAndPopTopUI(UILayer.Normal);
+					LayerPopTopUI(UILayer.Background);
 
-        // ================================================================
-        // 对外接口
-        // ================================================================
+					// 新背景入栈并显示
+					stack.Push(enterUI);
+					enterUI.UIMgrShow(this, args);
+					break;
 
-        /// <summary>打开 UI（默认 WaitForAnimation）</summary>
-        public void Open<T>(object args = null, QueueMode mode = QueueMode.WaitForAnimation)
-            where T : UIController
-        {
-            Open(typeof(T), args, mode);
-        }
+				case UILayer.Normal: // B层：隐藏上一个，显示当前
 
-        /// <summary>通过 Type 打开 UI</summary>
-        public void Open(Type controllerType, object args = null, QueueMode mode = QueueMode.WaitForAnimation)
-        {
-            if (controllerType == null) return;
+					//清空popUp层
+					LayerClearAndPopTopUI(UILayer.Popup);
 
-            var topUI = GetTopMostUI();
+					//之前没有normal界面打开，底部有背景层，禁用背景层逻辑，新UI入栈并显示
+					if (stack.Count <= 0)
+					{
+						Stack<UIController> bgStack = _stacks[UILayer.Background];
+						if (bgStack.Count > 0)
+						{
+							bgStack.Peek().UIMgrPause();
+						}
+						// 新UI入栈并显示
+						stack.Push(enterUI);
+						enterUI.UIMgrShow(this, args);
+						break;
+					}
 
-            // 最顶层 UI 就是目标且已打开 → 直接刷新
-            if (topUI != null && topUI.GetType() == controllerType && topUI.IsOpened)
-            {
-                topUI.PendingClose = false;
-                topUI.OnOpen(args);
-                return;
-            }
+					//之前有normal界面打开，栈顶是自己，重新刷新
+					if (stack.Peek() == enterUI)
+					{
+						enterUI.UIMgrShow(this, args);
+						break;
+					}
 
-            // 最顶层 UI 正在加载或动画中 → 入队等待
-            if (topUI != null && (topUI.IsLoading || topUI.IsInAnimation))
-            {
-                _queue.Enqueue(new QueueItem { ControllerType = controllerType, Args = args, Mode = mode });
-                return;
-            }
+					//栈中原先有此UI。之前有normal界面打开，栈顶不是自己，原先的Normal栈里包含了此数据
+					if (stack.Contains(enterUI))
+					{
+						//隐藏当前正常层栈顶
+						if (stack.Count > 0)
+						{
+							UIController currentNormal = stack.Pop();  // 查看栈顶（不弹出）
+							currentNormal.UIMgrHide();
+						}
+						while (stack.Peek() != enterUI)
+						{
+							stack.Pop();
+						}
+						stack.Peek().UIMgrShow(this, args);
+					}
+					else
+					{
+						//栈顶不是自己， 隐藏当前正常层栈顶
+						if (stack.Count > 0)
+						{
+							UIController currentNormal = stack.Peek();  // 查看栈顶（不弹出）
+							currentNormal.UIMgrHide();
+						}
+						// 新UI入栈并显示
+						stack.Push(enterUI);
+						enterUI.UIMgrShow(this, args);
+					}
+					break;
 
-            // 其他情况 → 直接执行
-            StartOpening(controllerType, args);
-        }
+				case UILayer.Popup: // C层：替换逻辑
 
-        /// <summary>通过 Type 关闭 UI</summary>
-        public void CloseByType(Type key)
-        {
-            var ctrl = FindController(key);
-            if (ctrl == null) return;
+					if (stack.Count <= 0)
+					{
+						Stack<UIController> bgStack = _stacks[UILayer.Normal];
+						if (bgStack.Count > 0)
+						{
+							bgStack.Peek().UIMgrPause();
+						}
+						// 新UI入栈并显示
+						stack.Push(enterUI);
+						enterUI.UIMgrShow(this, args);
+						break;
+					}
 
-            if (ctrl.IsOpened)
-                StartExit(ctrl);
-            else
-                ctrl.PendingClose = true; // 加载 / 动画中 → 标记
-        }
+					// 隐藏当前弹窗
+					UIController currentPopup = stack.Pop();
+					currentPopup.UIMgrHide();
+					// 新弹窗入栈并显示
+					stack.Push(enterUI);
+					enterUI.UIMgrShow(this, args);
+					break;
+			}
 
-        // ================================================================
-        // 核心流程
-        // ================================================================
+			Debug.Log($"[OpenUI] {enterUI.Name} | 层级: {enterLayer} | 栈大小: {stack.Count}");
+		}
+		/// <summary>
+		/// 层级界面清空并关闭当前层的顶部UI
+		/// </summary>
+		/// <param name="layer"></param>
+		private void LayerClearAndPopTopUI(UILayer layer)
+		{
+			Stack<UIController> stack = _stacks[layer];
+			if (stack.Count > 0)
+			{
+				UIController ui = stack.Pop();
+				ui.UIMgrHide();
+			}
+			//清空当前层栈数据
+			stack.Clear();
+		}
 
-        /// <summary>开始打开流程</summary>
-        private async void StartOpening(Type key, object args)
-        {
-            var ctrl = UIControllerRegistry.GetController(key);
-            if (ctrl == null)
-            {
-                Debug.LogError($"[UIManager] 找不到 Controller: {key.Name}");
-                return;
-            }
+		/// <summary>
+		/// 关闭当前层的顶部UI
+		/// </summary>
+		private bool LayerPopTopUI(UILayer layer)
+		{
+			Stack<UIController> stack = _stacks[layer];
+			if (stack.Count > 0)
+			{
+				UIController ui = stack.Pop();
+				ui.UIMgrHide();
+				return true;
+			}
+			return false;
+		}
 
-            ctrl.TryTransition(UIState.Loading);
+		/// <summary>
+		/// 显示当前层栈顶UI
+		/// </summary>
+		/// <param name="layer"></param>
+		private bool ShowTopUI(UILayer layer)
+		{
+			Stack<UIController> stack = _stacks[layer];
+			// 显示上一个UI（如果有）
+			if (stack.Count > 0)
+			{
+				UIController previousUI = stack.Peek();
+				previousUI.UIMgrShow(this);
+				return true;
+			}
+			return false;
+		}
+		/// <summary>
+		/// 关闭当前显示的UI（统一接口）
+		/// 按照 C层→B层→A层 优先级关闭
+		/// </summary>
+		public void CloseNowUI()
+		{
+			//如果有弹窗，优先关闭弹窗，打开上一层； 没有弹窗，优先关闭normal，打开上一层
+			if (LayerPopTopUI(UILayer.Popup) || LayerPopTopUI(UILayer.Normal))
+			{
+				bool normalCanOpen = ShowTopUI(UILayer.Normal);
+				if (!normalCanOpen)
+				{
+					ShowTopUI(UILayer.Background);
+				}
+				return;
+			}
+			LayerPopTopUI(UILayer.Background);
 
-            try
-            {
-                await InitView(ctrl);
-                if (!ctrl.IsLoading) { Object.Destroy(ctrl.View.gameObject); return; }
-                if (ctrl.PendingClose) { ctrl.View.gameObject.SetActive(false); ctrl.TryTransition(UIState.Closed); return; }
-
-                Activate(ctrl);
-                if (!await ctrl.EnterAsync()) return;
-                if (ctrl.PendingClose) { StartExit(ctrl); return; }
-
-                ctrl.TryTransition(UIState.Opened);
-                ctrl.View.SetInteractive(true);
-                ctrl.View.IsInteractable = true;
-                ctrl.OnOpen(args);
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[UIManager] Open 异常: {e}");
-                AbortOpen(ctrl);
-            }
-            finally
-            {
-                ProcessQueue();
-            }
-        }
-
-        /// <summary>初始化 View（复用已有或加载新的）</summary>
-        private async UniTask InitView(UIController ctrl)
-        {
-            Type key = ctrl.GetType();
-
-            // Controller 已有 View → 直接激活
-            if (ctrl.View != null)
-            {
-                ctrl.View.gameObject.SetActive(true);
-                return;
-            }
-
-            // 没有 View，加载新的
-            var prefab = await AssetMgr.Instance.LoadPrefabAsync(ctrl.PrefabPath);
-            if (prefab == null) { AbortOpen(ctrl); return; }
-
-            var instance = Object.Instantiate(prefab, UIRoot.Instance.GetLayer(ctrl.Layer));
-            var view = instance.GetComponent<UIView>();
-            if (view == null)
-            {
-                Object.Destroy(instance);
-                AbortOpen(ctrl);
-                return;
-            }
-            ctrl.OnInit(view);
-        }
-
-        /// <summary>激活 UI：入栈 + 层级仲裁</summary>
-        private void Activate(UIController ctrl)
-        {
-            switch (ctrl.Layer)
-            {
-                case UILayer.Background:
-                    if (_stacks[UILayer.Popup].Count > 0)
-                        StartExit(_stacks[UILayer.Popup].Peek());
-                    foreach (var n in _stacks[UILayer.Normal].ToArray())
-                        StartExit(n);
-                    _stacks[UILayer.Normal].Clear();
-                    _stacks[UILayer.Popup].Clear();
-                    if (_stacks[UILayer.Background].Count > 0)
-                        StartExit(_stacks[UILayer.Background].Peek());
-                    _stacks[UILayer.Background].Push(ctrl);
-                    break;
-
-                case UILayer.Normal:
-                    if (_stacks[UILayer.Popup].Count > 0)
-                        StartExit(_stacks[UILayer.Popup].Peek());
-                    _stacks[UILayer.Popup].Clear();
-                    if (_stacks[UILayer.Normal].Count > 0)
-                        _stacks[UILayer.Normal].Peek().OnHide();
-                    _stacks[UILayer.Normal].Push(ctrl);
-                    break;
-
-                case UILayer.Popup:
-                    if (_stacks[UILayer.Popup].Count > 0)
-                        StartExit(_stacks[UILayer.Popup].Peek());
-                    _stacks[UILayer.Popup].Push(ctrl);
-                    break;
-            }
-
-            ctrl.TryTransition(UIState.AnimationEnter);
-        }
-
-        /// <summary>开始退出流程</summary>
-        private async void StartExit(UIController ctrl)
-        {
-            try
-            {
-                await ctrl.ExitAsync();
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[UIManager] StartExit 异常: {e}");
-            }
-            finally
-            {
-                OnExitCleanup(ctrl);
-            }
-        }
-
-        /// <summary>退出后的栈管理 + 队列调度</summary>
-        private void OnExitCleanup(UIController ctrl)
-        {
-            _stacks[ctrl.Layer].Pop();
-
-            // 恢复上一个 Normal 层的交互
-            if (_stacks[UILayer.Normal].Count > 0)
-            {
-                var top = _stacks[UILayer.Normal].Peek();
-                if (top.IsOpened)
-                    top.View.SetInteractive(true);
-            }
-
-            ProcessQueue();
-        }
-
-        /// <summary>关闭所有（只隐藏不销毁）</summary>
-        public void CloseAll()
-        {
-            _queue.Clear();
-
-            foreach (var stack in _stacks.Values)
-            {
-                foreach (var ctrl in stack)
-                {
-                    ctrl.TryTransition(UIState.Closed);
-                    ctrl.OnHide();
-                    if (ctrl.View != null)
-                    {
-                        ctrl.View.gameObject.SetActive(false);
-                    }
-                }
-                stack.Clear();
-            }
-        }
-
-        // ================================================================
-        // 队列调度
-        // ================================================================
-
-        private void ProcessQueue()
-        {
-            if (_queue.Count == 0) return;
-
-            var next = _queue.Peek();
-            var topUI = GetTopMostUI();
-
-            bool canProcess = next.Mode switch
-            {
-                QueueMode.WaitForAnimation => topUI == null || !topUI.IsInAnimation,
-                QueueMode.WaitForClose     => topUI == null,
-                _                          => true,
-            };
-
-            if (canProcess)
-            {
-                _queue.Dequeue();
-                StartOpening(next.ControllerType, next.Args);
-            }
-        }
-
-        // ================================================================
-        // 工具方法
-        // ================================================================
-
-        /// <summary>获取最顶层 UI（优先级：Popup > Normal > Background）</summary>
-        private UIController GetTopMostUI()
-        {
-            if (_stacks[UILayer.Popup].Count > 0)
-                return _stacks[UILayer.Popup].Peek();
-            if (_stacks[UILayer.Normal].Count > 0)
-                return _stacks[UILayer.Normal].Peek();
-            if (_stacks[UILayer.Background].Count > 0)
-                return _stacks[UILayer.Background].Peek();
-            return null;
-        }
-
-        /// <summary>通过 Type 查找 Controller</summary>
-        private UIController FindController(Type key)
-        {
-            return UIControllerRegistry.GetController(key);
-        }
-
-        /// <summary>异常时清理</summary>
-        private void AbortOpen(UIController ctrl)
-        {
-            ctrl.OnDispose();
-            if (ctrl.View != null)
-                Object.Destroy(ctrl.View.gameObject);
-        }
-
-        // ================================================================
-        // 队列项
-        // ================================================================
-
-        private class QueueItem
-        {
-            public Type ControllerType;
-            public object Args;
-            public QueueMode Mode;
-        }
-    }
-
-    /// <summary>队列模式</summary>
-    public enum QueueMode
-    {
-        /// <summary>等待上一个界面动画结束后打开</summary>
-        WaitForAnimation,
-        /// <summary>等待上一个界面完全关闭后打开</summary>
-        WaitForClose,
-    }
+			Debug.LogWarning("[CloseNowUI] 没有可关闭的UI");
+		}
+		#endregion
+	}
 }
