@@ -35,12 +35,12 @@ PrefabPath 和 Layer 由 Controller 的 `abstract` 属性声明，UIManager 直�
 │        Open<ShopController>() / Close<T>()        │
 ├──────────────────────────────────────────────────┤
 │                UIManager                           │
-│  ┌──────────────┐ ┌────────────────────────┐     │
-│  │UIViewCache   │ │ UIControllerRegistry    │     │
-│  │(隐藏View缓存) │ │ (工厂 + 持久化)         │     │
-│  └──────────────┘ └────────────────────────┘     │
+│  ┌──────────────────────┐ ┌──────────────────┐   │
+│  │ UIControllerRegistry │ │   UIViewCache    │   │
+│  │ (工厂 + 持久化)       │ │ (隐藏View复用)    │   │
+│  └──────────────────────┘ └──────────────────┘   │
 │  ┌──────────────────────────────────────────┐    │
-│  │  队列调度 · 三层级栈 · 双通道动画 · 编排    │    │
+│  │    队列调度 · 三层级栈 · 动画编排          │    │
 │  └──────────────────────────────────────────┘    │
 ├──────────────────────┬───────────────────────────┤
 │  UIView (表现层)       │  UIController<T> (逻辑层)   │
@@ -255,21 +255,7 @@ public class UIManager : Singleton<UIManager>
 
 - `typeof(T)` 即为 Controller 唯一标识，无 string 重载
 
-### 6.2 子模块：UIViewCache
-
-**文件：** Manager/UIViewCache.cs
-
-```csharp
-internal class UIViewCache
-{
-    public GameObject Get(Type controllerType);
-    public void Store(Type controllerType, GameObject go);
-    public void Clear();
-    public int Count { get; }
-}
-```
-
-### 6.3 子模块：UIControllerRegistry
+### 6.2 子模块：UIControllerRegistry
 
 **文件：** Manager/UIControllerRegistry.cs
 
@@ -365,65 +351,345 @@ public class AssetMgr : Singleton<AssetMgr>
 
 ---
 
-## 九、生命周期流程
+## 九、完整伪代码
 
-### 9.1 打开流程
+### 9.1 UIManager 内部结构
+
+```csharp
+public class UIManager : Singleton<UIManager>
+{
+    // === 内部字段 ===
+    private UIControllerRegistry _registry = new();
+    private Dictionary<Type, GameObject> _viewCache = new();  // 关闭时 SetActive(false) 缓存
+    private Dictionary<Type, UIContext> _activeContexts = new();
+    private List<UIContext> _normalStack = new();
+    private UIContext _backgroundContext;
+    private UIContext _currentPopup;
+
+    // === 队列 ===
+    private QueueItem _queuedItem;   // 最多 1 个排队
+    private bool _isProcessing;
+
+    // === 双通道 ===
+    private UIContext _enteringContext;
+    private UIContext _exitingContext;
+    private bool IsBusy => _enteringContext != null || _exitingContext != null;
+
+    // ================================================================
+    // 9.2 Open<T>
+    // ================================================================
+
+    public void Open<T>(object args = null) where T : IUIController
+    {
+        Type key = typeof(T);
+
+        // 已打开 → 直接刷新
+        if (_activeContexts.TryGetValue(key, out var ctx) && ctx.IsOpened)
+        {
+            ctx.Controller.OnOpen(args);
+            return;
+        }
+
+        // 已有排队项 → 替换
+        if (_queuedItem != null && _queuedItem.ControllerType == key)
+        {
+            _queuedItem.Args = args;
+            return;
+        }
+
+        // 忙 → 入队
+        if (_isProcessing || IsBusy)
+        {
+            if (_queuedItem != null)
+            {
+                Debug.LogWarning($"[UIManager] 队列满，忽略: {typeof(T).Name}");
+                return;
+            }
+            _queuedItem = new QueueItem { ControllerType = key, Args = args };
+            return;
+        }
+
+        // 空闲 → 直接执行
+        _isProcessing = true;
+        ExecuteOpen(new QueueItem { ControllerType = key, Args = args });
+    }
+
+    // ================================================================
+    // 9.3 ExecuteOpen
+    // ================================================================
+
+    private async void ExecuteOpen(QueueItem item)
+    {
+        Type key = item.ControllerType;
+
+        // ---- 1. 获取 Controller，读取元数据 ----
+        var controller = _registry.GetController<T>();
+        string prefabPath = controller.PrefabPath;
+        UILayer layer = controller.Layer;
+
+        // ---- 2. 创建 Context ----
+        var ctx = new UIContext(key);
+        ctx.StateMachine.TryTransitionTo(UIState.Loading);
+        _enteringContext = ctx;
+
+        try
+        {
+            // ---- 3. 加载 / 复用 View ----
+            UIView view;
+            if (_viewCache.TryGetValue(key, out var cached) && cached != null)
+            {
+                cached.SetActive(true);
+                view = cached.GetComponent<UIView>();
+            }
+            else
+            {
+                var prefab = await AssetMgr.Instance.LoadPrefabAsync(prefabPath);
+                if (prefab == null) { CleanupAndNext(ctx); return; }
+                var instance = Object.Instantiate(prefab, UIRoot.Instance.GetLayer(layer));
+                view = instance.GetComponent<UIView>();
+            }
+
+            // 异步期间被 CloseAll 中断
+            if (ctx.StateMachine.CurrentState != UIState.Loading)
+            {
+                if (view != null) Object.Destroy(view.gameObject);
+                CleanupAndNext(ctx);
+                return;
+            }
+
+            // ---- 4. 绑定 ----
+            ctx.View = view;
+            ctx.Controller = controller;
+            bool isFirstView = controller.View == null;
+            controller.SetView(view);
+            (controller as UIController<...>).CloseAction = () => Close(key);
+
+            // ---- 5. OnInit ----
+            if (isFirstView) controller.OnInit();
+
+            // ---- 6. 层级注册 ----
+            RegisterContext(ctx);
+            ctx.StateMachine.TryTransitionTo(UIState.AnimationEnter);
+
+            // ---- 7. 入场动画 ----
+            view.IsInteractable = false;
+            view.SetInteractive(false);
+            view.PlayEnterAnimation(() => _animTcs.TrySetResult());
+            await _animTcs.Task;
+
+            // 动画期间被中断
+            if (ctx.StateMachine.CurrentState != UIState.AnimationEnter)
+            {
+                CleanupAndNext(ctx);
+                return;
+            }
+
+            // ---- 8. 完成 ----
+            ctx.StateMachine.TryTransitionTo(UIState.Opened);
+            view.SetInteractive(true);
+            view.IsInteractable = true;
+            controller.OnOpen(item.Args);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[UIManager] ExecuteOpen 异常: {e}");
+            CleanupAndNext(ctx);
+        }
+        finally
+        {
+            _enteringContext = null;
+            ProcessNext();
+        }
+    }
+
+    // ================================================================
+    // 9.4 Close / StartExit
+    // ================================================================
+
+    public void Close<T>() where T : IUIController
+    {
+        Type key = typeof(T);
+        if (_activeContexts.TryGetValue(key, out var ctx) && ctx.IsOpened)
+            StartExit(ctx);
+    }
+
+    private async void StartExit(UIContext ctx)
+    {
+        if (!ctx.IsOpened) return;
+
+        ctx.TryTransition(UIState.AnimationExit);
+        _exitingContext = ctx;
+
+        try
+        {
+            ctx.View.IsInteractable = false;
+            ctx.Controller.OnHide();
+            ctx.View.SetInteractive(false);
+
+            var tcs = new UniTaskCompletionSource();
+            ctx.View.PlayExitAnimation(() => tcs.TrySetResult());
+            await tcs.Task;
+
+            ctx.TryTransition(UIState.Closed);
+            ctx.View.gameObject.SetActive(false);           // 缓存复用
+            _viewCache[ctx.ControllerType] = ctx.View.gameObject;
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[UIManager] StartExit 异常: {e}");
+        }
+        finally
+        {
+            UnregisterContext(ctx);
+            _exitingContext = null;
+            RestorePreviousNormal();
+            if (!IsBusy) ProcessNext();
+        }
+    }
+
+    // ================================================================
+    // 9.5 CloseAll
+    // ================================================================
+
+    public void CloseAll()
+    {
+        _queuedItem = null;
+        _isProcessing = false;
+
+        // 清理双通道
+        if (_enteringContext != null) { DestroyView(_enteringContext); _enteringContext = null; }
+        if (_exitingContext != null) { DestroyView(_exitingContext); _exitingContext = null; }
+
+        // 遍历所有活跃 UI → 销毁
+        foreach (var ctx in _activeContexts.Values)
+        {
+            ctx.TryTransition(UIState.Closed);
+            ctx.Controller?.OnDispose();
+            if (ctx.View != null) Object.Destroy(ctx.View.gameObject);
+        }
+        _activeContexts.Clear();
+        _normalStack.Clear();
+        _backgroundContext = null;
+        _currentPopup = null;
+
+        // 清理缓存
+        foreach (var go in _viewCache.Values)
+            if (go != null) Object.Destroy(go);
+        _viewCache.Clear();
+
+        _registry.Clear();
+    }
+
+    // ================================================================
+    // 9.6 辅助方法
+    // ================================================================
+
+    private void RegisterContext(UIContext ctx)
+    {
+        _activeContexts[ctx.ControllerType] = ctx;
+        switch (ctx.Controller.Layer)
+        {
+            case UILayer.Background:
+                CloseAllNormalAndPopup();
+                if (_backgroundContext != null) StartExit(_backgroundContext);
+                _backgroundContext = ctx;
+                break;
+            case UILayer.Normal:
+                CloseAllPopup();
+                if (_normalStack.Count > 0) _normalStack[^1].Controller.OnHide();
+                _normalStack.Add(ctx);
+                break;
+            case UILayer.Popup:
+                if (_currentPopup != null) StartExit(_currentPopup);
+                _currentPopup = ctx;
+                break;
+        }
+    }
+
+    private void UnregisterContext(UIContext ctx)
+    {
+        _activeContexts.Remove(ctx.ControllerType);
+        if (_backgroundContext == ctx) _backgroundContext = null;
+        if (_currentPopup == ctx) _currentPopup = null;
+        _normalStack.Remove(ctx);
+    }
+
+    private void RestorePreviousNormal()
+    {
+        if (_normalStack.Count > 0)
+        {
+            var top = _normalStack[^1];
+            if (top.IsOpened)
+            {
+                top.Controller.OnOpen(null);
+                top.View.SetInteractive(true);
+            }
+        }
+    }
+
+    private void CloseAllNormalAndPopup()
+    {
+        if (_currentPopup != null) StartExit(_currentPopup);
+        foreach (var n in _normalStack.ToArray()) StartExit(n);
+        _normalStack.Clear();
+        _currentPopup = null;
+    }
+
+    private void CloseAllPopup()
+    {
+        if (_currentPopup != null) StartExit(_currentPopup);
+        _currentPopup = null;
+    }
+
+    private void ProcessNext()
+    {
+        if (_queuedItem != null)
+        {
+            var next = _queuedItem;
+            _queuedItem = null;
+            ExecuteOpen(next);
+        }
+        else
+        {
+            _isProcessing = false;
+        }
+    }
+
+    private void CleanupAndNext(UIContext ctx)
+    {
+        ctx.Dispose();
+        UnregisterContext(ctx);
+        _enteringContext = null;
+        ProcessNext();
+    }
+
+    private class QueueItem
+    {
+        public Type ControllerType;
+        public object Args;
+    }
+}
+```
+
+### 9.7 关键时序保证
 
 ```
 Open<T>(args)
-  → Type key = typeof(T)
-  → 队列调度
-  → ExecuteOpen(key, args)
+  └─┬─ 已 Opened → OnOpen(args)  // 刷新
+    ├─ 已排队     → 替换 args     // 去重
+    ├─ 忙         → 入队(1个)    // 等待
+    └─ 空闲       → ExecuteOpen   // 立即执行
 
 ExecuteOpen:
-  1. controller = _registry.GetController<T>()
-     → PrefabPath = controller.PrefabPath
-     → Layer = controller.Layer
-  2. 创建 Context(key), 状态 → Loading
-  3. View 加载：
-     a. _viewCache.Get(key) → 有缓存 SetActive(true)
-     b. 无缓存 → AssetMgr.Instance.LoadPrefabAsync(PrefabPath)
-     → Instantiate(prefab, UIRoot.GetLayer(Layer))
-  4. 状态检查（仍 Loading？）
-  5. bool isFirstView = controller.View == null
-  6. controller.SetView(view)
-  7. 注入 CloseAction 到 controller
-  8. if (isFirstView) controller.OnInit()     ← 首次设置 View
-  9. 层级注册 → 状态 AnimationEnter
-  10. view.IsInteractable = false             ← 框架设置标记
-  11. view.SetInteractive(false)              ← CanvasGroup 关闭射线
-  12. view.PlayEnterAnimation() → await
-  13. 状态 → Opened
-  14. view.SetInteractive(true)
-  15. view.IsInteractable = true              ← 框架恢复标记
-  16. controller.OnOpen(args)                ← 携带原始参数
-  17. ProcessNext()
-```
+  OnInit()                        // 仅首次，SetView 之后
+  PlayEnterAnimation → await      // 动画期间不可交互
+  OnOpen(args)                    // UI 可见可交互
 
-### 9.2 关闭流程
+StartExit:
+  OnHide() → PlayExitAnimation → await → cache view(SetActive(false))
 
-```
-StartExit(ctx):
-  1. ctx.IsOpened 检查
-  2. ctx.TryTransition(AnimationExit)
-  3. view.IsInteractable = false
-  4. controller.OnHide()
-  5. view.SetInteractive(false)
-  6. view.PlayExitAnimation() → await
-  7. ctx.TryTransition(Closed)
-  8. _viewCache.Store(ctx.ControllerType, view.gameObject)
-  9. 栈出栈 + RestorePreviousNormal
-  10. ProcessNext()
-```
-
-### 9.3 关闭全部
-
-```
-CloseAll():
-  1. 清空队列
-  2. 遍历活跃 Context → ForceClose + OnDispose + Destroy View
-  3. _viewCache.Clear()
-  4. _registry.Clear()
+CloseAll:
+  清空队列 + 中断双通道 + 全部 Destroy + 清缓存 + 清 Registry
 ```
 
 ---
@@ -610,7 +876,6 @@ Assets/Scripts/UIFrameworkLib/
 │   └── UIController.cs
 ├── Manager/
 │   ├── UIManager.cs
-│   ├── UIViewCache.cs
 │   ├── UIControllerRegistry.cs
 │   └── AssetMgr.cs
 └── Editor/
