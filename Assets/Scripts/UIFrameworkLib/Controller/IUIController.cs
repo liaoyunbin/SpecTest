@@ -15,6 +15,9 @@ namespace UIFrameworkLib
         /// <summary>绑定上下文（框架内部调用）</summary>
         void BindContext(UIContext context);
 
+        /// <summary>设置 View（Controller 创建 View 后调用）</summary>
+        void SetView(UIView view);
+
         /// <summary>仅一次：View 创建后调用</summary>
         void OnInit();
 

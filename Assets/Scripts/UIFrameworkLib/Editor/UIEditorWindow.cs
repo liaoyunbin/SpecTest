@@ -49,9 +49,9 @@ namespace UIFrameworkLib.Editor
                 }
             });
 
-            DrawSection("=== Pool ===", () =>
+            DrawSection("=== Cache ===", () =>
             {
-                EditorGUILayout.LabelField($"Pool Total: {mgr.Pool.TotalCount}");
+                EditorGUILayout.LabelField($"Cached Views: {mgr.CachedViewCount}");
             });
 
             DrawSection("=== Operations ===", () =>
@@ -62,10 +62,10 @@ namespace UIFrameworkLib.Editor
                     Debug.Log("[UIFrameworkLib] 已强制关闭所有 UI");
                 }
 
-                if (GUILayout.Button("Clear Pool", GUILayout.Height(30)))
+                if (GUILayout.Button("Clear Cache", GUILayout.Height(30)))
                 {
-                    mgr.ClearPool();
-                    Debug.Log("[UIFrameworkLib] 已清空对象池");
+                    mgr.ClearCache();
+                    Debug.Log("[UIFrameworkLib] 已清空缓存");
                 }
             });
 

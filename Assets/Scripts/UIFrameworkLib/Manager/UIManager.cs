@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -13,10 +12,10 @@ namespace UIFrameworkLib
     ///
     /// 职责：
     /// - 提供 Open&lt;T&gt;() / Close&lt;T&gt;() 对外接口
-    /// - 管理异步加载、队列调度
+    /// - 管理 Controller 持久化与队列调度
     /// - 双通道动画（退场 + 进场可重叠）
     /// - Normal 栈管理
-    /// - 对象池
+    /// - 隐藏 View 缓存（复用上次关闭的实例，不销毁）
     ///
     /// 使用方式：
     /// <code>
@@ -43,8 +42,14 @@ namespace UIFrameworkLib
         /// <summary>配置加载器</summary>
         public UIConfigLoader ConfigLoader { get; } = new();
 
-        /// <summary>对象池</summary>
-        public UIPool Pool { get; } = new();
+        /// <summary>缓存的隐藏 View（关闭时 setActive(false) 保留，复用减少加载）</summary>
+        public readonly Dictionary<string, GameObject> CachedViews = new();
+
+        /// <summary>持久化的 Controller（首次创建后常驻）</summary>
+        private readonly Dictionary<string, IUIController> _controllers = new();
+
+        /// <summary>已调用过 OnInit 的 Controller</summary>
+        private readonly HashSet<string> _initializedControllers = new();
 
         /// <summary>活跃的 UI Context 字典</summary>
         private readonly Dictionary<string, UIContext> _activeContexts = new();
@@ -92,66 +97,51 @@ namespace UIFrameworkLib
         /// <summary>所有活跃的 Context（供调试工具使用）</summary>
         public IEnumerable<UIContext> GetAllActiveContexts() => _activeContexts.Values;
 
+        /// <summary>缓存的 View 数</summary>
+        public int CachedViewCount => CachedViews.Count;
+
         // ================================================================
         // 对外接口
         // ================================================================
 
-        /// <summary>
-        /// 通过 Controller 类型打开 UI
-        /// 内部异步加载，调用方无需等待
-        /// </summary>
-        /// <typeparam name="T">Controller 类型</typeparam>
-        /// <param name="args">打开参数</param>
+        /// <summary>通过 Controller 类型打开 UI</summary>
         public void Open<T>(object args = null) where T : IUIController
         {
             var uiKey = ResolveUIKey<T>();
             EnqueueOpen(uiKey, args);
         }
 
-        /// <summary>
-        /// 通过 UIKey 打开 UI（供编辑器调试或非泛型场景使用）
-        /// </summary>
+        /// <summary>通过 UIKey 打开 UI（供编辑器调试或非泛型场景使用）</summary>
         public void Open(string uiKey, object args = null)
         {
             EnqueueOpen(uiKey, args);
         }
 
-        /// <summary>
-        /// 通过 Controller 类型关闭 UI
-        /// </summary>
-        /// <typeparam name="T">Controller 类型</typeparam>
+        /// <summary>通过 Controller 类型关闭 UI</summary>
         public void Close<T>() where T : IUIController
         {
             var uiKey = ResolveUIKey<T>();
             Close(uiKey);
         }
 
-        /// <summary>
-        /// 通过 UIKey 关闭 UI
-        /// </summary>
+        /// <summary>通过 UIKey 关闭 UI</summary>
         public void Close(string uiKey)
         {
-            var singletonKey = GetSingletonKey(uiKey);
-            if (_activeContexts.TryGetValue(singletonKey, out var ctx)
+            if (_activeContexts.TryGetValue(uiKey, out var ctx)
                 && ctx.StateMachine.CurrentState == UIState.Opened)
             {
                 StartExit(ctx);
             }
         }
 
-        /// <summary>
-        /// 立即关闭所有 UI（用于场景切换等紧急情况）
-        /// </summary>
+        /// <summary>立即关闭所有 UI（场景切换等紧急情况）</summary>
         public void CloseAll()
         {
-            // 清空队列
             _queue.Clear();
             _isProcessing = false;
 
-            // 取消所有正在进行的操作
             if (_enteringContext != null)
             {
-                _enteringContext.Cancel();
                 CleanupContext(_enteringContext);
                 _enteringContext = null;
             }
@@ -185,10 +175,51 @@ namespace UIFrameworkLib
             _normalStack.Clear();
             _backgroundContext = null;
             _currentPopup = null;
+
+            // 清理缓存 View
+            foreach (var kv in CachedViews)
+            {
+                if (kv.Value != null) Object.Destroy(kv.Value);
+            }
+            CachedViews.Clear();
+
+            // 清理持久 Controller
+            foreach (var kv in _controllers)
+            {
+                try { (kv.Value as IDisposable)?.Dispose(); }
+                catch { /* 忽略 */ }
+            }
+            _controllers.Clear();
+            _initializedControllers.Clear();
         }
 
-        /// <summary>清空对象池</summary>
-        public void ClearPool() => Pool.Clear();
+        /// <summary>清空所有缓存的隐藏 View</summary>
+        public void ClearCache()
+        {
+            foreach (var kv in CachedViews)
+            {
+                if (kv.Value != null) Object.Destroy(kv.Value);
+            }
+            CachedViews.Clear();
+        }
+
+        // ================================================================
+        // View 缓存（供 Controller 工具方法调用）
+        // ================================================================
+
+        /// <summary>获取缓存的隐藏 View GameObject</summary>
+        public GameObject GetCachedView(string uiKey)
+        {
+            return CachedViews.TryGetValue(uiKey, out var go) && go != null ? go : null;
+        }
+
+        /// <summary>缓存隐藏的 View（关闭时调用）</summary>
+        public void CacheView(string uiKey, GameObject go)
+        {
+            if (go == null) return;
+            go.SetActive(false);
+            CachedViews[uiKey] = go;
+        }
 
         // ================================================================
         // 队列调度
@@ -250,7 +281,7 @@ namespace UIFrameworkLib
         }
 
         // ================================================================
-        // 异步加载 + 入场
+        // 执行打开
         // ================================================================
 
         private async void ExecuteOpen(QueueItem item)
@@ -265,87 +296,99 @@ namespace UIFrameworkLib
             }
 
             var ctx = new UIContext(item.UIKey, config);
-            ctx.Cts = new CancellationTokenSource();
-            var ct = ctx.Cts.Token;
-
             ctx.StateMachine.TryTransitionTo(UIState.Loading);
             _enteringContext = ctx;
 
             try
             {
-                // ---- 1. 加载 Prefab + 实例化 ----
-                var loadResult = await UIResourceLoader.Instance.LoadAsync(config, ct);
-                if (loadResult == null)
+                // ---- 1. 获取或创建 Controller ----
+                IUIController controller;
+                if (!_controllers.TryGetValue(item.UIKey, out controller))
                 {
+                    var typeName = $"{GetControllerTypeNamespace()}.{item.UIKey}Controller";
+                    controller = CreateController(typeName);
+                    if (controller == null)
+                    {
+                        ctx.StateMachine.TryTransitionTo(UIState.Closed);
+                        CleanupAndNext(ctx);
+                        return;
+                    }
+                    _controllers[item.UIKey] = controller;
+                }
+
+                ctx.BindController(controller);
+
+                // 首次创建时才调用 OnInit
+                if (_initializedControllers.Add(item.UIKey))
+                {
+                    SafeExecute(() => controller.OnInit(), $"{item.UIKey}.OnInit");
+                }
+
+                // ---- 2. Controller 创建 View ----
+                // CreateViewAsync 会走 Controller 上的工具方法（LoadFromResources 等）
+                var viewTask = controller.CreateViewAsync();
+                // 使用状态机检查替代 CancellationToken
+                var view = await viewTask;
+                if (ctx.StateMachine.CurrentState != UIState.Loading)
+                {
+                    // 被 CloseAll 等情况中断
+                    if (view != null && view.gameObject != null)
+                        Object.Destroy(view.gameObject);
+                    CleanupAndNext(ctx);
+                    return;
+                }
+
+                if (view == null)
+                {
+                    Debug.LogError($"[UIFrameworkLib] {item.UIKey} CreateViewAsync 返回 null");
                     ctx.StateMachine.TryTransitionTo(UIState.Closed);
                     CleanupAndNext(ctx);
                     return;
                 }
 
-                if (ct.IsCancellationRequested) { Object.Destroy(loadResult.Instance); CleanupAndNext(ctx); return; }
-
-                var view = loadResult.View;
+                view.Controller = controller;
                 view.Internal_SetContext(ctx);
+                ctx.SetView(view);
 
-                // ---- 2. 获取或复用 Controller ----
-                // 从池中取出的 View 可能已有 Controller（首次打开才创建）
-                var controller = view.Controller;
-                if (controller == null)
-                {
-                    var controllerTypeName = $"{GetControllerTypeNamespace()}.{item.UIKey}Controller";
-                    controller = CreateController(controllerTypeName);
-                    if (controller != null)
-                    {
-                        view.Controller = controller;
-                        ctx.Bind(view, controller);
-                        SafeExecute(() => controller.OnInit(), $"{item.UIKey}.OnInit");
-                    }
-                }
-                else
-                {
-                    ctx.Bind(view, controller);
-                }
-
-                // ---- 6. 注册到活动列表 ----
+                // ---- 3. 注册到活跃列表 ----
                 RegisterContext(ctx);
                 ctx.StateMachine.TryTransitionTo(UIState.AnimationEnter);
 
-                // ---- 7. 入场动画 ----
+                // ---- 4. 入场动画 ----
                 view.SetInteractive(false);
                 view.DisableAllSelectables();
                 if (config.Layer == UILayer.Popup) view.ShowMask();
 
-                SafeExecute(() => controller?.OnOpen(item.Args), $"{item.UIKey}.OnOpen");
+                SafeExecute(() => controller.OnOpen(item.Args), $"{item.UIKey}.OnOpen");
 
                 // 等待入场动画
                 var animTcs = new UniTaskCompletionSource();
                 view.PlayEnterAnimation(() => animTcs.TrySetResult());
-                await animTcs.Task.AttachExternalCancellation(ct);
+                await animTcs.Task;
 
-                if (ct.IsCancellationRequested) { CleanupAndNext(ctx); return; }
+                if (ctx.StateMachine.CurrentState != UIState.AnimationEnter)
+                {
+                    // 动画期间被 CloseAll 中断
+                    CleanupAndNext(ctx);
+                    return;
+                }
 
-                // ---- 8. 动画结束 → Opened ----
+                // ---- 5. 动画结束 → Opened ----
                 ctx.StateMachine.TryTransitionTo(UIState.Opened);
                 view.RestoreSelectables();
                 view.SetInteractive(true);
                 ctx.OpenTime = Time.time;
 
-                SafeExecute(() => controller?.OnShown(), $"{item.UIKey}.OnShown");
-            }
-            catch (OperationCanceledException)
-            {
-                // 正常取消，不做处理
+                SafeExecute(() => controller.OnShown(), $"{item.UIKey}.OnShown");
             }
             catch (Exception e)
             {
                 Debug.LogError($"[UIFrameworkLib] {item.UIKey} 加载异常: {e}");
                 CleanupAndNext(ctx);
-                return;
             }
             finally
             {
                 _enteringContext = null;
-                ctx.Cts?.Dispose();
                 ProcessNext();
             }
         }
@@ -366,16 +409,14 @@ namespace UIFrameworkLib
                 SafeExecute(() => ctx.Controller?.OnHide(), $"{ctx.UIKey}.OnHide");
                 ctx.View.SetInteractive(false);
 
-                // 等待退场动画
                 var tcs = new UniTaskCompletionSource();
                 ctx.View.PlayExitAnimation(() => tcs.TrySetResult());
                 await tcs.Task;
 
                 ctx.StateMachine.TryTransitionTo(UIState.Closed);
 
-                // 不调用 OnDispose — Controller 随 View 留在池中复用
-                ctx.View.gameObject.SetActive(false);
-                Pool.Return(ctx.UIKey, ctx.View.gameObject);
+                // 不销毁 View，缓存起来下次复用
+                CacheView(ctx.UIKey, ctx.View.gameObject);
             }
             catch (Exception e)
             {
@@ -385,10 +426,7 @@ namespace UIFrameworkLib
             {
                 UnregisterContext(ctx);
                 _exitingContext = null;
-
-                // 恢复栈中上一个 Normal
                 RestorePreviousNormal();
-
                 if (!IsBusy) ProcessNext();
             }
         }
@@ -397,9 +435,6 @@ namespace UIFrameworkLib
         // 栈管理
         // ================================================================
 
-        /// <summary>
-        /// 注册 Context 到活跃列表，按层级执行对应管理策略
-        /// </summary>
         private void RegisterContext(UIContext ctx)
         {
             _activeContexts[ctx.UIKey] = ctx;
@@ -407,16 +442,13 @@ namespace UIFrameworkLib
             switch (ctx.Config.Layer)
             {
                 case UILayer.Background:
-                    // 打开 Background → 弹出其上的所有 Normal 和 Popup
                     CloseAllNormalAndPopup();
-                    // 替换当前 Background
                     if (_backgroundContext != null && _backgroundContext != ctx)
                         StartExit(_backgroundContext);
                     _backgroundContext = ctx;
                     break;
 
                 case UILayer.Normal:
-                    // 隐藏上一个 Normal（入栈）
                     if (_normalStack.Count > 0)
                     {
                         var prev = _normalStack[^1];
@@ -427,19 +459,14 @@ namespace UIFrameworkLib
                     break;
 
                 case UILayer.Popup:
-                    // 替换当前 Popup
                     if (_currentPopup != null && _currentPopup != ctx)
                         StartExit(_currentPopup);
                     _currentPopup = ctx;
-                    // 记录栈顶 Normal（用于后续 Back 链路）
                     ctx.PreviousContext = _normalStack.Count > 0 ? _normalStack[^1] : null;
                     break;
             }
         }
 
-        /// <summary>
-        /// 从活跃列表中注销 Context
-        /// </summary>
         private void UnregisterContext(UIContext ctx)
         {
             _activeContexts.Remove(ctx.UIKey);
@@ -458,9 +485,6 @@ namespace UIFrameworkLib
             }
         }
 
-        /// <summary>
-        /// 恢复栈顶 Normal（当前 Normal 退场或被关闭后调用）
-        /// </summary>
         private void RestorePreviousNormal()
         {
             if (_normalStack.Count > 0)
@@ -474,19 +498,14 @@ namespace UIFrameworkLib
             }
         }
 
-        /// <summary>
-        /// 关闭所有 Normal 和 Popup（打开 Background 时调用）
-        /// </summary>
         private void CloseAllNormalAndPopup()
         {
-            // 关闭当前 Popup
             if (_currentPopup != null)
             {
                 if (_currentPopup.StateMachine.CurrentState == UIState.Opened)
                     StartExit(_currentPopup);
                 _currentPopup = null;
             }
-            // 关闭所有 Normal
             foreach (var normal in _normalStack.ToArray())
             {
                 if (normal.StateMachine.CurrentState == UIState.Opened)
@@ -499,11 +518,6 @@ namespace UIFrameworkLib
         // 辅助方法
         // ================================================================
 
-        /// <summary>
-        /// 从 Controller 类型解析 UIKey
-        /// 规则：类名去掉 "Controller" 后缀
-        /// 示例：ShopController → "Shop"
-        /// </summary>
         private string ResolveUIKey<T>() where T : IUIController
         {
             var name = typeof(T).Name;
@@ -512,21 +526,15 @@ namespace UIFrameworkLib
                 : name;
         }
 
-        /// <summary>单例 Key（等同 UIKey）</summary>
-        private static string GetSingletonKey(string uiKey) => uiKey;
-
         /// <summary>
-        /// 获取 Controller 所在的命名空间
-        /// 子类可通过 partial class 方式覆盖此方法以指定自定义命名空间
+        /// 获取 Controller 所在的命名空间。
+        /// 业务方可覆盖此方法以指定自定义命名空间。
         /// </summary>
         protected virtual string GetControllerTypeNamespace()
         {
-            // 默认命名空间约定：{项目Assembly名}.UIFrameworkLib.Controller
-            // 业务方可 override 返回实际命名空间
             return "UIFrameworkLib";
         }
 
-        /// <summary>反射创建 Controller</summary>
         private static IUIController CreateController(string controllerTypeName)
         {
             if (string.IsNullOrEmpty(controllerTypeName)) return null;
@@ -548,7 +556,6 @@ namespace UIFrameworkLib
             }
         }
 
-        /// <summary>安全执行（全局 try-catch）</summary>
         private static void SafeExecute(Action action, string context)
         {
             try
@@ -561,7 +568,6 @@ namespace UIFrameworkLib
             }
         }
 
-        /// <summary>清理 Context 并处理下一个队列</summary>
         private void CleanupAndNext(UIContext ctx)
         {
             ctx.Dispose();
@@ -570,7 +576,6 @@ namespace UIFrameworkLib
             ProcessNext();
         }
 
-        /// <summary>仅清理 Context（不处理队列）</summary>
         private void CleanupContext(UIContext ctx)
         {
             try
@@ -588,7 +593,6 @@ namespace UIFrameworkLib
         // 内部类
         // ================================================================
 
-        /// <summary>队列元素</summary>
         private class QueueItem
         {
             public string UIKey { get; }

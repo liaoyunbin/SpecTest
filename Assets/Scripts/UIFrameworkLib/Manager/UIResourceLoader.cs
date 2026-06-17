@@ -1,132 +1,50 @@
-using System;
-using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
-using Object = UnityEngine.Object;
 
 namespace UIFrameworkLib
 {
     /// <summary>
-    /// 资源加载结果
-    /// </summary>
-    public class UIResourceLoadResult
-    {
-        public GameObject Instance { get; set; }
-        public UIView View { get; set; }
-    }
-
-    /// <summary>
-    /// UI 资源加载器
-    /// 职责：对象池获取 / Resources 异步加载 / 实例化 / UIView 组件解析
-    /// 与 UIManager 解耦，便于替换加载方式（Addressables / AssetBundle）
+    /// UI 资源管理器
+    /// 职责：从 Resources 异步加载 Prefab，返回原始 GameObject。
+    /// 不负责实例化、不负责缓存、不负责对象池。
+    /// 如需自定义加载方式（Addressables / AssetBundle），继承重写 <see cref="LoadPrefabAsync"/>。
     /// </summary>
     public class UIResourceLoader : Singleton<UIResourceLoader>
     {
-        /// <summary>对象池</summary>
-        private UIPool Pool => UIManager.Instance.Pool;
-
-        /// <summary>构造（Singleton 要求公开无参构造）</summary>
-        public UIResourceLoader() { }
-
         /// <summary>
-        /// 异步加载并实例化 UI
+        /// 异步加载 Prefab
         /// </summary>
-        /// <param name="config">UI 配置</param>
-        /// <param name="cancellationToken">取消令牌</param>
-        /// <returns>加载结果（含 Instance 和 UIView），失败返回 null</returns>
-        public async UniTask<UIResourceLoadResult> LoadAsync(
-            UIItemConfig config,
-            CancellationToken cancellationToken)
+        /// <param name="prefabPath">Resources 中的 Prefab 路径</param>
+        /// <returns>加载的 Prefab 原始引用（未实例化），失败返回 null</returns>
+        public async UniTask<GameObject> LoadPrefabAsync(string prefabPath)
         {
-            if (config == null)
+            if (string.IsNullOrEmpty(prefabPath))
             {
-                Debug.LogError("[UIResourceLoader] config 为空");
+                Debug.LogError($"[UIResourceLoader] PrefabPath 为空");
                 return null;
             }
 
-            var ct = cancellationToken;
+            TimeoutGuard(prefabPath, 5f).Forget();
 
-            // 1. 优先从对象池获取
-            var go = Pool.Get(config.UIKey);
-            if (go != null)
+            var req = Resources.LoadAsync<GameObject>(prefabPath);
+            await req.ToUniTask();
+
+            if (req.asset == null)
             {
-                // 从对象池取出：直接实例化
-                return InstantiateUI(go, config);
-            }
-
-            // 2. 异步加载 Prefab
-            go = await LoadPrefabAsync(config, ct);
-            if (go == null || ct.IsCancellationRequested) return null;
-
-            // 3. 实例化
-            return InstantiateUI(go, config);
-        }
-
-        /// <summary>
-        /// 异步加载 Prefab（从 Resources）
-        /// 子类可重写以支持 Addressables / AssetBundle
-        /// </summary>
-        protected virtual async UniTask<GameObject> LoadPrefabAsync(
-            UIItemConfig config,
-            CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrEmpty(config.PrefabPath))
-            {
-                Debug.LogError($"[UIResourceLoader] {config.UIKey} PrefabPath 为空");
+                Debug.LogError($"[UIResourceLoader] 加载失败: {prefabPath}");
                 return null;
             }
 
-            var ct = cancellationToken;
-
-            // 超时看门狗（仅日志警告，不阻塞）
-            TimeoutGuard(config.UIKey, 5f).Forget();
-
-            var req = Resources.LoadAsync<GameObject>(config.PrefabPath);
-            await req.ToUniTask(cancellationToken: ct);
-
-            if (ct.IsCancellationRequested) return null;
-
-            var go = req.asset as GameObject;
-            if (go == null)
-            {
-                Debug.LogError($"[UIResourceLoader] Prefab 加载失败: {config.PrefabPath}");
-                return null;
-            }
-
-            return go;
-        }
-
-        /// <summary>
-        /// 实例化 UI
-        /// </summary>
-        protected virtual UIResourceLoadResult InstantiateUI(GameObject prefab, UIItemConfig config)
-        {
-            var layerRoot = UIRoot.Instance.GetLayer(config.Layer);
-            var instance = Object.Instantiate(prefab, layerRoot);
-            instance.name = config.UIKey;
-
-            var view = instance.GetComponent<UIView>();
-            if (view == null)
-            {
-                Debug.LogError($"[UIResourceLoader] {config.UIKey} 缺少 UIView 组件");
-                Object.Destroy(instance);
-                return null;
-            }
-
-            return new UIResourceLoadResult
-            {
-                Instance = instance,
-                View = view,
-            };
+            return req.asset as GameObject;
         }
 
         /// <summary>
         /// 超时看门狗（仅日志警告，不中断流程）
         /// </summary>
-        private static async UniTaskVoid TimeoutGuard(string uiKey, float timeoutSeconds)
+        private static async UniTaskVoid TimeoutGuard(string path, float timeoutSeconds)
         {
             await UniTask.Delay((int)(timeoutSeconds * 1000));
-            Debug.LogWarning($"[UIResourceLoader] {uiKey} 加载超过 {timeoutSeconds}s");
+            Debug.LogWarning($"[UIResourceLoader] {path} 加载超过 {timeoutSeconds}s");
         }
     }
 }

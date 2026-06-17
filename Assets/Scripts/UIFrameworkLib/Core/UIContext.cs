@@ -1,12 +1,12 @@
 using System;
-using System.Threading;
 using UnityEngine;
 
 namespace UIFrameworkLib
 {
     /// <summary>
-    /// UIContext：每个 UI 实例的运行时状态容器和生命周期锚点
-    /// UIManager 通过 Context 管理所有 UI
+    /// UIContext：每个 UI 实例的运行时状态容器
+    /// UIManager 通过 Context 管理所有 UI。
+    /// 生命周期：每次打开创建一个新 Context，关闭后释放。
     /// </summary>
     public class UIContext
     {
@@ -17,8 +17,10 @@ namespace UIFrameworkLib
         /// <summary>UI 唯一标识</summary>
         public string UIKey { get; }
 
-        /// <summary>实例 ID（同一 UIKey 可能有多个实例，如 Toast）</summary>
+        /// <summary>实例 ID（同一 UIKey 每次打开递增）</summary>
         public int InstanceId { get; }
+
+        private static int _nextInstanceId;
 
         // ================================================================
         // 核心引用
@@ -40,16 +42,11 @@ namespace UIFrameworkLib
         /// <summary>状态机</summary>
         public UIStateMachine StateMachine { get; } = new();
 
-        /// <summary>取消令牌源</summary>
-        public CancellationTokenSource Cts { get; set; }
-
         /// <summary>打开时间戳</summary>
         public float OpenTime { get; set; }
 
         /// <summary>栈中上一个 UI</summary>
         public UIContext PreviousContext { get; set; }
-
-        private static int _nextInstanceId;
 
         // ================================================================
         // 构造
@@ -66,27 +63,23 @@ namespace UIFrameworkLib
         // 方法
         // ================================================================
 
-        /// <summary>绑定 View 和 Controller</summary>
-        public void Bind(UIView view, IUIController controller)
+        /// <summary>绑定 Controller（View 创建前调用）</summary>
+        public void BindController(IUIController controller)
         {
-            View = view;
             Controller = controller;
             controller.BindContext(this);
         }
 
-        /// <summary>取消当前异步操作</summary>
-        public void Cancel()
+        /// <summary>设置 View（Controller 创建 View 后调用）</summary>
+        public void SetView(UIView view)
         {
-            Cts?.Cancel();
-            Cts?.Dispose();
-            Cts = null;
+            View = view;
+            Controller?.SetView(view);
         }
 
-        /// <summary>完全清理</summary>
+        /// <summary>完全清理（出错或 CloseAll 时销毁）</summary>
         public void Dispose()
         {
-            Cancel();
-
             StateMachine.TryTransitionTo(UIState.Closed);
 
             try
@@ -101,7 +94,7 @@ namespace UIFrameworkLib
             if (View != null)
             {
                 if (View.gameObject != null)
-                    GameObject.Destroy(View.gameObject);
+                    UnityEngine.Object.Destroy(View.gameObject);
                 View = null;
             }
 
