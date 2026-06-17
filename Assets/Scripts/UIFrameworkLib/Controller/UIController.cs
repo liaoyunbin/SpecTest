@@ -1,180 +1,103 @@
 using System;
-using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
-using Object = UnityEngine.Object;
 
 namespace UIFrameworkLib
 {
     /// <summary>
     /// Controller 泛型基类
     /// 一个 UI 对应一个 Controller，T 是对应的 UIView 类型。
-    ///
-    /// Controller 负责：
-    /// - 通过 <see cref="CreateViewAsync"/> 创建自己的 View
-    /// - 处理业务逻辑、事件订阅
-    ///
-    /// 使用示例：
-    /// <code>
-    /// public class ShopController : UIController&lt;ShopView&gt;
-    /// {
-    ///     // 使用框架提供的工具方法加载 View
-    ///     public override async UniTask&lt;ShopView&gt; CreateViewAsync()
-    ///     {
-    ///         return await LoadFromResources("Prefabs/ShopPanel");
-    ///     }
-    ///
-    ///     protected internal override void OnInit()
-    ///     {
-    ///         View.m_BtnClose.onClick.AddListener(CloseSelf);
-    ///     }
-    /// }
-    /// </code>
     /// </summary>
     /// <typeparam name="T">对应的 UIView 类型</typeparam>
     public abstract class UIController<T> : IUIController where T : UIView
     {
-        // ================================================================
-        // 公开属性
-        // ================================================================
-
-        /// <summary>强类型 View 引用</summary>
+        // === 框架注入 ===
         public T View { get; private set; }
+        internal UIStateMachine StateMachine { get; } = new();
+        internal bool PendingClose { get; set; } // Close 请求在加载/动画中途到达时标记
 
-        /// <summary>运行上下文</summary>
-        public UIContext Context { get; private set; }
+        // === 语义化状态（UIManager 通过这些方法判断） ===
+        public bool IsOpened      => StateMachine.CurrentState == UIState.Opened;
+        public bool IsLoading     => StateMachine.CurrentState == UIState.Loading;
+        public bool IsInAnimation => StateMachine.CurrentState == UIState.AnimationEnter
+                                  || StateMachine.CurrentState == UIState.AnimationExit;
+        public bool IsClosed      => StateMachine.CurrentState == UIState.Closed;
+        internal bool TryTransition(UIState target) => StateMachine.TryTransitionTo(target);
 
-        /// <summary>UI 配置</summary>
-        public UIItemConfig Config => Context?.Config;
+        // === 静态元数据（子类声明，UIManager 读取） ===
+        public abstract string PrefabPath { get; }
+        public abstract UILayer Layer { get; }
 
-        // ================================================================
-        // IUIController 显式实现
-        // ================================================================
-
-        UIContext IUIController.Context => Context;
-
-        void IUIController.BindContext(UIContext context)
-        {
-            Context = context;
-        }
-
+        // === IUIController 显式实现 ===
         void IUIController.SetView(UIView view)
         {
             View = view as T;
             if (View == null)
-                Debug.LogError($"[UIFrameworkLib] Controller<{typeof(T).Name}> 与 View 类型不匹配。"
-                    + $" View 实际类型: {view?.GetType().Name}");
+                Debug.LogError($"[UIFrameworkLib] 类型不匹配: {typeof(T).Name} vs {view?.GetType().Name}");
         }
 
-        // ================================================================
-        // View 创建（子类必须实现）
-        // ================================================================
-
-        /// <summary>
-        /// 创建或获取 View。
-        /// 框架在 OnInit 之后、OnOpen 之前调用此方法。
-        /// 子类应调用框架提供的工具方法（如 <see cref="LoadFromResources"/>）实现。
-        /// </summary>
-        public abstract UniTask<T> CreateViewAsync();
-
-		// ================================================================
-		// 框架工具方法
-		// ================================================================
-
-		/// <summary>
-		/// 从 Resources 加载 Prefab 并实例化。
-		/// 自动检查是否有缓存的 View（隐藏的旧实例），有则直接复用。
-		/// </summary>
-		/// <param name="prefabPath">Resources 中的 Prefab 路径</param>
-		public async UniTask<T> LoadFromResources(string prefabPath)
+        // === 生命周期编排 ===
+        public virtual async UniTask<bool> EnterAsync()
         {
-            var uiKey = Context.UIKey;
+            TryTransition(UIState.AnimationEnter);
 
-            // 1. 检查是否有缓存的隐藏实例
-            var cached = UIManager.Instance.GetCachedView(uiKey);
-            if (cached != null)
+            var view = View;
+            view.IsInteractable = false;
+            view.SetInteractive(false);
+
+            try
             {
-                cached.SetActive(true);
-                var view = cached.GetComponent<T>();
-                return view;
+                // 先播放动画（fire-and-forget）
+                view.PlayEnterAnimation();
+                // 再等待动画策略时长
+                await UniTask.Delay(
+                    TimeSpan.FromMilliseconds(AnimUtils.MsToSeconds(
+                        view.GetEnterAnimationDurationMs() + 500)));
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[UIController] Enter 异常: {e}");
             }
 
-            // 2. 异步加载 Prefab
-            var prefab = await UIResourceLoader.Instance.LoadPrefabAsync(prefabPath);
-            if (prefab == null) return null;
-
-            // 3. 实例化
-            return InstantiateView(prefab);
+            return IsInAnimation; // false = 中途被中断
         }
 
-        /// <summary>
-        /// 从对象池/缓存获取 View（如果之前有缓存的隐藏实例）。
-        /// 没有缓存时返回 null。
-        /// </summary>
-        protected T LoadFromCache()
+        public virtual async UniTask ExitAsync()
         {
-            var cached = UIManager.Instance.GetCachedView(Context.UIKey);
-            if (cached != null)
+            if (!IsOpened) return;
+
+            TryTransition(UIState.AnimationExit);
+
+            var view = View;
+            view.IsInteractable = false;
+            OnHide();
+            view.SetInteractive(false);
+
+            try
             {
-                cached.SetActive(true);
-                return cached.GetComponent<T>();
+                // 先播放动画（fire-and-forget）
+                view.PlayExitAnimation();
+                // 再等待动画策略时长
+                await UniTask.Delay(
+                    TimeSpan.FromMilliseconds(AnimUtils.MsToSeconds(
+                        view.GetExitAnimationDurationMs() + 500)));
             }
-            return null;
-        }
-
-        /// <summary>实例化 Prefab 并挂载到对应层级</summary>
-        private T InstantiateView(GameObject prefab)
-        {
-            var parent = UIRoot.Instance.GetLayer(Config.Layer);
-            var instance = Object.Instantiate(prefab, parent);
-            instance.name = Context.UIKey;
-
-            var view = instance.GetComponent<T>();
-            if (view == null)
+            catch (Exception e)
             {
-                Debug.LogError($"[UIFrameworkLib] {Context.UIKey} 缺少 {typeof(T).Name} 组件");
-                Object.Destroy(instance);
-                return null;
+                Debug.LogError($"[UIController] Exit 异常: {e}");
             }
 
-            return view;
+            TryTransition(UIState.Closed);
+            view.gameObject.SetActive(false);
         }
 
-		// ================================================================
-		// 生命周期钩子（业务层重写）
-		// ================================================================
+        // === 生命周期（业务层重写） ===
+        protected internal virtual void OnInit() { }
+        protected internal virtual void OnOpen(object args) { }
+        protected internal virtual void OnHide() { }
+        protected internal virtual void OnDispose() { }
 
-		/// <summary>仅一次：Controller 首次创建后调用。适合注册事件。</summary>
-		public virtual void OnInit() { }
-
-		/// <summary>每次打开时调用，接收外部传入的参数。</summary>
-		public virtual void OnOpen(object args) { }
-
-		/// <summary>入场动画结束后调用，此时 UI 已可见且可交互。</summary>
-		public virtual void OnShown() { }
-
-		/// <summary>退场动画开始时调用。</summary>
-		public virtual void OnHide() { }
-
-		/// <summary>销毁时调用，清理事件绑定、对象引用等。</summary>
-		public virtual void OnDispose() { }
-
-        // ================================================================
-        // 辅助方法
-        // ================================================================
-
-        /// <summary>关闭当前 UI</summary>
-        protected void CloseSelf()
-        {
-            UIManager.Instance.Close(ResolveUIKey());
-        }
-
-        private string ResolveUIKey()
-        {
-            var name = GetType().Name;
-            return name.EndsWith("Controller")
-                ? name[..^"Controller".Length]
-                : name;
-        }
+        // === 辅助 ===
+        protected void CloseSelf() => UIManager.Instance.Close<T>();
     }
 }

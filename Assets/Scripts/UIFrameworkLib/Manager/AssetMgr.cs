@@ -1,15 +1,15 @@
+using System;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
 namespace UIFrameworkLib
 {
     /// <summary>
-    /// UI 资源管理器
+    /// 资源加载器（单例）
     /// 职责：从 Resources 异步加载 Prefab，返回原始 GameObject。
-    /// 不负责实例化、不负责缓存、不负责对象池。
     /// 如需自定义加载方式（Addressables / AssetBundle），继承重写 <see cref="LoadPrefabAsync"/>。
     /// </summary>
-    public class UIResourceLoader : Singleton<UIResourceLoader>
+    public class AssetMgr : Singleton<AssetMgr>
     {
         /// <summary>
         /// 异步加载 Prefab
@@ -20,31 +20,20 @@ namespace UIFrameworkLib
         {
             if (string.IsNullOrEmpty(prefabPath))
             {
-                Debug.LogError($"[UIResourceLoader] PrefabPath 为空");
+                Debug.LogError($"[AssetMgr] PrefabPath 为空");
                 return null;
             }
-
-            TimeoutGuard(prefabPath, 5f).Forget();
 
             var req = Resources.LoadAsync<GameObject>(prefabPath);
             await req.ToUniTask();
 
             if (req.asset == null)
             {
-                Debug.LogError($"[UIResourceLoader] 加载失败: {prefabPath}");
+                Debug.LogError($"[AssetMgr] 加载失败: {prefabPath}");
                 return null;
             }
 
             return req.asset as GameObject;
-        }
-
-        /// <summary>
-        /// 超时看门狗（仅日志警告，不中断流程）
-        /// </summary>
-        private static async UniTaskVoid TimeoutGuard(string path, float timeoutSeconds)
-        {
-            await UniTask.Delay((int)(timeoutSeconds * 1000));
-            Debug.LogWarning($"[UIResourceLoader] {path} 加载超过 {timeoutSeconds}s");
         }
     }
 }

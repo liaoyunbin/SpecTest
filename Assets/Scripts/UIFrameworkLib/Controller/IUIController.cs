@@ -5,31 +5,31 @@ namespace UIFrameworkLib
 {
     /// <summary>
     /// Controller 公共接口
-    /// 用于框架内部多态操作（避免泛型协变问题）
+    /// 用于框架内部多态操作
     /// </summary>
     public interface IUIController
     {
-        /// <summary>运行上下文</summary>
-        UIContext Context { get; }
-		/// <summary>绑定上下文（框架内部调用）</summary>
-		void BindContext(UIContext context);
-
-        /// <summary>设置 View（Controller 创建 View 后调用）</summary>
+        // === 框架注入 ===
         void SetView(UIView view);
 
-        /// <summary>仅一次：View 创建后调用</summary>
-        void OnInit();
+        // === 生命周期（业务层重写） ===
+        void OnInit();           // 首次：SetView 之后
+        void OnOpen(object args); // 每次打开：动画结束后
+        void OnHide();            // 退场前
+        void OnDispose();         // 清理
 
-        /// <summary>每次打开时调用</summary>
-        void OnOpen(object args);
+        // === 生命周期编排（UIManager 委托给 Controller） ===
+        UniTask<bool> EnterAsync(); // 入场：设置交互→播放动画。返回 false 表示中断
+        UniTask ExitAsync();        // 退场：关闭交互→OnHide→播放动画→隐藏 View
 
-        /// <summary>入场动画结束后调用</summary>
-        void OnShown();
+        // === 静态元数据（UIManager 读取） ===
+        string PrefabPath { get; }
+        UILayer Layer { get; }
 
-        /// <summary>退场动画开始时调用</summary>
-        void OnHide();
-
-        /// <summary>销毁时调用，清理资源</summary>
-        void OnDispose();
+        // === 语义化状态 ===
+        bool IsOpened { get; }
+        bool IsLoading { get; }
+        bool IsInAnimation { get; }
+        bool IsClosed { get; }
     }
 }
