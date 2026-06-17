@@ -1,6 +1,8 @@
 using System;
 using Cysharp.Threading.Tasks;
+using Unity.VisualScripting;
 using UnityEngine;
+using static UnityEditor.Experimental.GraphView.GraphView;
 
 namespace UIFrameworkLib
 {
@@ -37,9 +39,49 @@ namespace UIFrameworkLib
 					break;
 			}
 		}
+		public override void UIMgrShow(UIManager _parentMgr, params object[] args)
+		{
+			m_LoadedCount++;
+			if (wnd != null)
+			{
+				//设置窗口有效
+				getGameObj().SetActive(true);
+				//调用事件函数
+				_onShowWnd();
+				//处理动画，然后延迟处理函数
+				_dealAniAction(wnd.showAniName, wnd.showAniTime, null, null);
+				return;
+			}
 
-        // === 生命周期编排 ===
-        public virtual async UniTask<bool> EnterAsync()
+			GameObject parent = _parentMgr.GetLayerParent(layer);
+			bool success = LoadUI(parent == null ? null : parent.transform);
+			if (!success)
+			{
+				return;
+			}
+			_dealAniAction(wnd.showAniName, wnd.showAniTime, () => DoShow(args), null);
+		}
+		/// <summary>
+		/// 仅供UIMgr调用
+		/// </summary>
+		public override void UIMgrHide()
+		{
+			m_LoadedCount--;
+			_onHideWnd();
+			if (wnd != null)
+			{
+				_dealAniAction(wnd.hideAniName, wnd.hideAniTime, null, DoHide);
+				return;
+			}
+		}
+
+		/// <summary>
+		/// 仅供UIMgr调用
+		/// </summary>
+		public override void UIMgrPause() { }
+
+		// === 生命周期编排 ===
+		public virtual async UniTask<bool> EnterAsync()
         {
             TryTransition(UIState.AnimationEnter);
             var view = View;
