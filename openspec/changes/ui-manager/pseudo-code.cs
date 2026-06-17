@@ -92,6 +92,25 @@ string ResolveUIKey<T>()
         : name
 }
 
+// --- 1e. Singleton<T> ---
+abstract class Singleton<T> where T : class, new()
+{
+    private static T _instance
+    private static readonly object _lock = new()
+
+    static T Instance
+    {
+        get
+        {
+            if _instance == null
+                lock (_lock)
+                    if _instance == null
+                        _instance = new T()
+            return _instance
+        }
+    }
+}
+
 
 // ============================================================
 // 2. CONTROLLER — 逻辑层
@@ -157,6 +176,7 @@ abstract class UIView : MonoBehaviour
 {
     // 属性
     UIContext Context                    // 运行时上下文
+    IUIController Controller             // 关联的 Controller（跨池缓存持久化）
 
     // --- 交互控制 ---
     void SetInteractive(bool enabled)    // 控制 CanvasGroup
@@ -406,9 +426,17 @@ class UIManager
             view = loadResult.View
             view.Internal_SetContext(ctx)
 
-            // 2. 创建 Controller + 绑定
-            controller = Registry.CreateController(Registry.GetControllerType(item.UIKey))
-            if controller != null → ctx.Bind(view, controller)
+            // 2. 获取或复用 Controller（池中取出的 View 可能已有，首次才创建 + OnInit）
+            controller = view.Controller
+            if controller == null
+                controller = Registry.CreateController(...)
+                if controller != null
+                    view.Controller = controller
+                    ctx.Bind(view, controller)
+                    SafeExecute(controller.OnInit)
+
+            else
+                ctx.Bind(view, controller)
 
             // 7. 注册到活跃列表
             RegisterContext(ctx)
@@ -419,8 +447,7 @@ class UIManager
             view.DisableAllSelectables()
             if config.Layer == Popup → view.ShowMask()
 
-            // 9. 生命周期
-            SafeExecute(controller.OnInit)
+            // 9. 生命周期（每次打开都调用 OnOpen）
             SafeExecute(controller.OnOpen(item.Args))
 
             // 10. 入场动画
@@ -466,8 +493,7 @@ class UIManager
 
             ctx.StateMachine → Closed
 
-            // 缓存到对象池
-            SafeExecute(ctx.Controller.OnDispose)
+            // 不调 OnDispose — Controller 随 View 留在池中复用
             ctx.View.gameObject.SetActive(false)
             Pool.Return(ctx.UIKey, ctx.View.gameObject)
 

@@ -28,23 +28,13 @@ namespace UIFrameworkLib
     /// UIManager.Instance.Close&lt;ShopController&gt;();
     /// </code>
     /// </summary>
-    public class UIManager
+    public class UIManager : Singleton<UIManager>
     {
-        // ================================================================
-        // Singleton
-        // ================================================================
-
-        private static UIManager _instance;
-        public static UIManager Instance => _instance ??= new UIManager();
-
         // ================================================================
         // 构造
         // ================================================================
 
-        private UIManager()
-        {
-            ResourceLoader = new UIResourceLoader(Pool);
-        }
+        public UIManager() { }
 
         // ================================================================
         // 内部字段
@@ -55,9 +45,6 @@ namespace UIFrameworkLib
 
         /// <summary>对象池</summary>
         public UIPool Pool { get; } = new();
-
-        /// <summary>资源加载器</summary>
-        public UIResourceLoader ResourceLoader { get; private set; }
 
         /// <summary>活跃的 UI Context 字典</summary>
         private readonly Dictionary<string, UIContext> _activeContexts = new();
@@ -287,7 +274,7 @@ namespace UIFrameworkLib
             try
             {
                 // ---- 1. 加载 Prefab + 实例化 ----
-                var loadResult = await ResourceLoader.LoadAsync(config, ct);
+                var loadResult = await UIResourceLoader.Instance.LoadAsync(config, ct);
                 if (loadResult == null)
                 {
                     ctx.StateMachine.TryTransitionTo(UIState.Closed);

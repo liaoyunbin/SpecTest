@@ -20,15 +20,13 @@ namespace UIFrameworkLib
     /// 职责：对象池获取 / Resources 异步加载 / 实例化 / UIView 组件解析
     /// 与 UIManager 解耦，便于替换加载方式（Addressables / AssetBundle）
     /// </summary>
-    public class UIResourceLoader
+    public class UIResourceLoader : Singleton<UIResourceLoader>
     {
-        private readonly UIPool _pool;
+        /// <summary>对象池</summary>
+        private UIPool Pool => UIManager.Instance.Pool;
 
-        /// <param name="pool">UI 对象池引用</param>
-        public UIResourceLoader(UIPool pool)
-        {
-            _pool = pool ?? throw new ArgumentNullException(nameof(pool));
-        }
+        /// <summary>构造（Singleton 要求公开无参构造）</summary>
+        public UIResourceLoader() { }
 
         /// <summary>
         /// 异步加载并实例化 UI
@@ -49,7 +47,7 @@ namespace UIFrameworkLib
             var ct = cancellationToken;
 
             // 1. 优先从对象池获取
-            var go = _pool.Get(config.UIKey);
+            var go = Pool.Get(config.UIKey);
             if (go != null)
             {
                 // 从对象池取出：直接实例化
