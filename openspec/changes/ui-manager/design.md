@@ -43,7 +43,7 @@
 ├──────────────────────┬───────────────────────────┤
 │  UIView (表现层)       │  UIController<T> (逻辑层)   │
 │  - PlayEnterAnimation│  - OnInit(首次,View已就绪) │
-│  - PlayExitAnimation │  - OnOpen(动画后,每次)     │
+│  - PlayExitAnimation │  - OnOpen(args, 动画后)   │
 │  - SetInteractive    │  - OnHide / OnDispose     │
 │  - (无框架引用)       │  - CloseSelf()             │
 │                      │  - (仅持有 CloseAction)     │
@@ -187,7 +187,7 @@ public interface IUIController
     void SetView(UIView view);
 
     void OnInit();      // 首次：SetView 之后。View 已就绪
-    void OnOpen();      // 每次打开：动画结束后。UI 可见可交互
+    void OnOpen(object args);   // 每次打开：动画结束后，携带 Open<T> 传入的参数。UI 可见可交互
     void OnHide();      // 退场前
     void OnDispose();   // 清理
 }
@@ -214,7 +214,7 @@ public abstract class UIController<T> : IUIController where T : UIView
 
     // === 生命周期（业务层重写） ===
     protected internal virtual void OnInit() { }
-    protected internal virtual void OnOpen() { }
+    protected internal virtual void OnOpen(object args) { }    // 每次 · 动画已结束
     protected internal virtual void OnHide() { }
     protected internal virtual void OnDispose() { }
 
@@ -233,10 +233,11 @@ public class ShopController : UIController<ShopView>
         View.m_BtnClose.onClick.AddListener(CloseSelf);
     }
 
-    protected internal override void OnOpen()
+    protected internal override void OnOpen(object args)
     {
+        var categoryId = (int)args;
         // UI 已可见，刷新数据
-        RefreshShopData();
+        RefreshShopData(categoryId);
     }
 }
 ```
@@ -310,7 +311,7 @@ internal class UIControllerRegistry
 
 ```
 Open<T>(args)：
-  同一界面已 Opened → 直接 OnOpen()
+  同一界面已 Opened → 直接 OnOpen(args)
   已有排队项 → 替换（队列深度 = 1）
   空闲 → 立即执行
 ```
@@ -332,7 +333,7 @@ Open<T>(args)：
 ```csharp
 public class AssetMgr : Singleton<AssetMgr>
 {
-    public virtual async UniTask<GameObject> LoadPrefabAsync(string prefabPath)
+    public async UniTask<GameObject> LoadPrefabAsync(string prefabPath)
     {
         var req = Resources.LoadAsync<GameObject>(prefabPath);
         await req.ToUniTask();
@@ -342,7 +343,7 @@ public class AssetMgr : Singleton<AssetMgr>
 ```
 
 - 继承 `Singleton<AssetMgr>`，通过 `AssetMgr.Instance` 访问
-- `LoadPrefabAsync` 为 `virtual`，切换 Addressables / AssetBundle 时继承重写即可
+- 需要切换 Addressables / AssetBundle 时直接修改此类源码
 
 ## 八、UIConfigLoader 配置加载器
 
@@ -405,7 +406,7 @@ ExecuteOpen:
   13. 状态 → Opened
   14. view.SetInteractive(true)
   15. view.IsInteractable = true           ← 框架恢复标记
-  16. controller.OnOpen()
+  16. controller.OnOpen(args)   ← 携带原始参数
   17. ProcessNext()
 ```
 
@@ -659,5 +660,7 @@ Assets/Scripts/UIFrameworkLib/
 | v14 | **删除 ShowMask/HideMask：** 遮罩是 Popup Prefab 内部视觉元素，由子类在 `PlayEnterAnimation/PlayExitAnimation` 中自行处理 |
 | v15 | **IAssetMgr 重命名 + 动画策略类抽取：** `IUIResourceLoader` → `IAssetMgr`，`UIResourceLoader` → `AssetMgr`；动画能力从 UIView 内置 Helper 抽为独立策略类（`IAnimationStrategy`）+ 工厂（`IAnimationFactory`），UIView 改为组合获取 |
 | v16 | **动画工厂改为静态：** `IAnimationFactory` / `DefaultAnimationFactory` 删除；新增静态类 `UIAnimation`（`Play()` + `SetProvider()`）；UIView 不再持有 `AnimationFactory` 属性，`UIManager` 不再有 `SetAnimationFactory()` |
-| v17 | **删除 IAssetMgr 接口：** `AssetMgr` 直接继承 `Singleton<AssetMgr>`，`LoadPrefabAsync` 改为 `virtual`；删除 `Core/IAssetMgr.cs` |
+| v17 | **删除 IAssetMgr 接口：** `AssetMgr` 直接继承 `Singleton<AssetMgr>`；删除 `Core/IAssetMgr.cs` |
 | v18 | **AnimationFactory 重构：** `UIAnimation` 改名 `AnimationFactory`，`Play` 拆为 `PlayEnter`/`PlayExit`；策略类合并（FadeEnter+Exit→FadeStrategy），Enter/Exit 合入一个策略类；枚举精简（FadeEnter/Exit → Fade）；不做预注册字典，按枚举即时 new |
+| v18.1 | **动画策略加缓存：** `AnimationFactory` 内部 `Dictionary<UIAnimationType, IAnimationStrategy>` 缓存首次创建的策略实例 |
+| v19 | **修 OnOpen 参数 + AssetMgr 去 virtual：** `OnOpen()` 恢复为 `OnOpen(object args)`，已打开刷新时传递新参数；`AssetMgr.LoadPrefabAsync` 去除 `virtual`（Singleton 下继承重写无意义） |
