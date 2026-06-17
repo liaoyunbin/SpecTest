@@ -494,7 +494,7 @@ public class UIManager : Singleton<UIManager>
 
         try
         {
-            if (!await GetOrCreateView(ctrl)) { AbortOpen(ctrl); return; }
+            await InitView(ctrl);
             if (!ctrl.IsLoading) { Object.Destroy(ctrl.View.gameObject); return; }
             if (ctrl.PendingClose) { ctrl.View.gameObject.SetActive(false); ctrl.TryTransition(UIState.Closed); return; }
 
@@ -522,8 +522,8 @@ public class UIManager : Singleton<UIManager>
     // 9.4 阶段方法
     // ================================================================
 
-    /// <summary>获取或创建 View，并完成初始化</summary>
-    private async UniTask<bool> GetOrCreateView(IUIController ctrl)
+    /// <summary>初始化 View（复用已有或加载新的）</summary>
+    private async UniTask InitView(IUIController ctrl)
     {
         Type key = ctrl.GetType();
         UIView view;
@@ -538,15 +538,13 @@ public class UIManager : Singleton<UIManager>
         {
             // 没有 View，加载新的
             var prefab = await AssetMgr.Instance.LoadPrefabAsync(ctrl.PrefabPath);
-            if (prefab == null) return false;
+            if (prefab == null) { AbortOpen(ctrl); return; }
             
             var instance = Object.Instantiate(prefab, UIRoot.Instance.GetLayer(ctrl.Layer));
             view = instance.GetComponent<UIView>();
             ctrl.SetView(view);
             ctrl.OnInit();
         }
-        
-        return true;
     }
 
     // ================================================================
