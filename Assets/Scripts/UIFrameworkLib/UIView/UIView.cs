@@ -36,6 +36,9 @@ namespace UIFrameworkLib
         /// <summary>运行上下文（框架内部设置）</summary>
         public UIContext Context { get; private set; }
 
+        /// <summary>关联的 Controller（跨池缓存周期持久化，非首次打开不重建）</summary>
+        public IUIController Controller { get; internal set; }
+
         private CanvasGroup _canvasGroup;
         private Dictionary<Selectable, bool> _selectableSnapshot;
 

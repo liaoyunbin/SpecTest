@@ -300,10 +300,21 @@ namespace UIFrameworkLib
                 var view = loadResult.View;
                 view.Internal_SetContext(ctx);
 
-                // ---- 2. 创建 Controller ----
-                var controllerTypeName = $"{GetControllerTypeNamespace()}.{item.UIKey}Controller";
-                var controller = CreateController(controllerTypeName);
-                if (controller != null)
+                // ---- 2. 获取或复用 Controller ----
+                // 从池中取出的 View 可能已有 Controller（首次打开才创建）
+                var controller = view.Controller;
+                if (controller == null)
+                {
+                    var controllerTypeName = $"{GetControllerTypeNamespace()}.{item.UIKey}Controller";
+                    controller = CreateController(controllerTypeName);
+                    if (controller != null)
+                    {
+                        view.Controller = controller;
+                        ctx.Bind(view, controller);
+                        SafeExecute(() => controller.OnInit(), $"{item.UIKey}.OnInit");
+                    }
+                }
+                else
                 {
                     ctx.Bind(view, controller);
                 }
@@ -317,7 +328,6 @@ namespace UIFrameworkLib
                 view.DisableAllSelectables();
                 if (config.Layer == UILayer.Popup) view.ShowMask();
 
-                SafeExecute(() => controller?.OnInit(), $"{item.UIKey}.OnInit");
                 SafeExecute(() => controller?.OnOpen(item.Args), $"{item.UIKey}.OnOpen");
 
                 // 等待入场动画
@@ -376,7 +386,7 @@ namespace UIFrameworkLib
 
                 ctx.StateMachine.TryTransitionTo(UIState.Closed);
 
-                SafeExecute(() => ctx.Controller?.OnDispose(), $"{ctx.UIKey}.OnDispose");
+                // 不调用 OnDispose — Controller 随 View 留在池中复用
                 ctx.View.gameObject.SetActive(false);
                 Pool.Return(ctx.UIKey, ctx.View.gameObject);
             }
