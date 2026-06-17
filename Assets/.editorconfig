@@ -1,0 +1,120 @@
+# EditorConfig 文件 - 根目录标识
+root = true
+
+# 通用设置（适用于所有文件）
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = tab
+indent_size = 4
+
+# C# 项目专用
+[*.cs]
+
+## 括号风格：Allman（大括号新起一行）
+csharp_new_line_before_open_brace = all
+
+## 缩进与对齐
+indent_style = tab
+indent_size = 4
+tab_width = 4
+
+## using 指令排序
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+## 编码风格
+csharp_using_directive_placement = outside_namespace
+csharp_prefer_braces = true
+csharp_preserve_single_line_statements = true
+csharp_preserve_single_line_blocks = true
+
+## 其他常用习惯
+csharp_prefer_simple_using_statement = true
+csharp_style_namespace_declarations = file_scoped
+csharp_style_prefer_top_level_statements = false
+
+# ============================================
+# 命名规则 (dotnet_naming_rule)
+# ============================================
+
+## 1. 全局成员：Class, Method, Property, Public field, Enum
+dotnet_naming_rule.global_members.severity = warning
+dotnet_naming_rule.global_members.symbols = global_members_symbols
+dotnet_naming_rule.global_members.style = pascal_case_style
+
+dotnet_naming_symbols.global_members_symbols.applicable_kinds = class, struct, interface, enum, delegate, method, property, event, field
+dotnet_naming_symbols.global_members_symbols.applicable_accessibilities = public, internal, protected_internal, private_protected  # 注意：protected internal 也算 public 范围
+dotnet_naming_symbols.global_members_symbols.required_modifiers = 
+
+# 但 interface 已有特殊 I 前缀规则，所以排除 interface 由单独规则处理
+dotnet_naming_symbols.global_members_symbols.applicable_kinds = class, struct, enum, delegate, method, property, event, field
+# 再额外加一条对于 public/internal field 等，但需要排除 const（常量单独处理）以及排除私有等
+# 更精确的方式：用 applicable_accessibilities 过滤，然后通过 exclusion 或覆盖规则处理；我们增加一个排除常量符号集
+dotnet_naming_symbols.global_members_symbols.excluded_symbols = const_symbols
+
+dotnet_naming_symbols.const_symbols.applicable_kinds = field
+dotnet_naming_symbols.const_symbols.required_modifiers = const
+
+## 常量成员 ALL_CAPS
+dotnet_naming_rule.const_members.severity = error
+dotnet_naming_rule.const_members.symbols = const_symbols
+dotnet_naming_rule.const_members.style = all_caps_style
+
+dotnet_naming_style.all_caps_style.capitalization = all_upper
+dotnet_naming_style.all_caps_style.word_separator = _
+
+## 2. 私有成员 (instance) _camelCase
+dotnet_naming_rule.private_members.severity = warning
+dotnet_naming_rule.private_members.symbols = private_symbols
+dotnet_naming_rule.private_members.style = underscore_camel_case_style
+
+dotnet_naming_symbols.private_symbols.applicable_kinds = field
+dotnet_naming_symbols.private_symbols.applicable_accessibilities = private
+dotnet_naming_symbols.private_symbols.required_modifiers = 
+
+dotnet_naming_style.underscore_camel_case_style.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case_style.required_prefix = _
+
+## 3. 私有保护成员 (protected) _CamelCase (大写C)
+dotnet_naming_rule.protected_members.severity = warning
+dotnet_naming_rule.protected_members.symbols = protected_symbols
+dotnet_naming_rule.protected_members.style = underscore_pascal_case_style
+
+dotnet_naming_symbols.protected_symbols.applicable_kinds = field
+dotnet_naming_symbols.protected_symbols.applicable_accessibilities = protected, protected_internal, private_protected
+
+dotnet_naming_style.underscore_pascal_case_style.capitalization = pascal_case
+dotnet_naming_style.underscore_pascal_case_style.required_prefix = _
+
+## 4. 私有静态成员 s_camelCase
+dotnet_naming_rule.private_static_members.severity = warning
+dotnet_naming_rule.private_static_members.symbols = private_static_symbols
+dotnet_naming_rule.private_static_members.style = s_camel_case_style
+
+dotnet_naming_symbols.private_static_symbols.applicable_kinds = field
+dotnet_naming_symbols.private_static_symbols.applicable_accessibilities = private
+dotnet_naming_symbols.private_static_symbols.required_modifiers = static
+
+dotnet_naming_style.s_camel_case_style.capitalization = camel_case
+dotnet_naming_style.s_camel_case_style.required_prefix = s_
+
+## 5. 局部变量和方法参数 camelCase
+dotnet_naming_rule.locals_and_params.severity = warning
+dotnet_naming_rule.locals_and_params.symbols = locals_and_params_symbols
+dotnet_naming_rule.locals_and_params.style = camel_case_style
+
+dotnet_naming_symbols.locals_and_params_symbols.applicable_kinds = parameter, local
+dotnet_naming_style.camel_case_style.capitalization = camel_case
+
+## 6. 接口 IPascalCase
+dotnet_naming_rule.interface_names.severity = error
+dotnet_naming_rule.interface_names.symbols = interface_symbols
+dotnet_naming_rule.interface_names.style = i_pascal_case_style
+
+dotnet_naming_symbols.interface_symbols.applicable_kinds = interface
+dotnet_naming_style.i_pascal_case_style.capitalization = pascal_case
+dotnet_naming_style.i_pascal_case_style.required_prefix = I
+
