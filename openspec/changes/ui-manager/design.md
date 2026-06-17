@@ -10,8 +10,8 @@
 |------|------|
 | **VC 分离** | View 只做表现逻辑，Controller 只做业务逻辑 |
 | **1:1 约束** | 一个 Controller 对应且仅对应一个 View，由 UIController\<T\> 泛型保证 |
-| **Manager 全权负责 View 生命周期** | 加载、缓存、实例化、挂载、销毁全部由 UIManager 掌控 |
-| **接口极简** | 对外 `Open<T>()` / `Close<T>()`；对内 Controller 仅注入一个 `CloseAction` 委托 |
+| **Controller 编排生命周期** | 入场/退场动画、状态转换由 Controller 的 `EnterAsync()` / `ExitAsync()` 自行管理 |
+| **Manager 专注全局调度** | 栈管理、队列调度、层级仲裁、View 加载全部由 UIManager 掌控 |
 | **Type 即身份** | 框架内部以 `typeof(T)` 作为唯一标识，零字符串操作，零命名约定依赖 |
 | **Controller 无框架依赖** | Controller 是纯 C# 类，不依赖 UnityEngine 运行时，可独立单元测试 |
 
@@ -20,8 +20,17 @@
 | 层 | 可以做什么 | 不可以做什么 |
 |----|-----------|-------------|
 | **UIView** (MonoBehaviour) | 动画、交互控制、遮罩、组件绑定 | 访问 Controller、调用业务 API |
-| **UIController\<T\>** (纯 C#) | 业务逻辑、事件订阅、数据刷新、声明 PrefabPath + Layer | 创建/加载/销毁 View、访问框架单例 |
-| **UIManager** | 生命周期编排、View 加载/缓存/实例化、队列调度 | 处理具体业务逻辑 |
+| **UIController\<T\>** (纯 C#) | 业务逻辑、事件订阅、数据刷新、声明 PrefabPath + Layer | 创建/加载/销毁 View |
+| **UIManager** | 栈管理、队列调度、层级仲裁、View 加载/缓存/实例化 | 处理具体业务逻辑 |
+
+### 生命周期编排归属
+
+| 阶段 | 编排者 | 说明 |
+|------|--------|------|
+| **入场** | `UIController.EnterAsync()` | 设置交互状态 → 播放入场动画 |
+| **退场** | `UIController.ExitAsync()` | 关闭交互 → `OnHide()` → 播放退场动画 → 隐藏 View |
+| **栈恢复** | `UIManager.OnExitCleanup()` | 弹出栈 → 恢复上层 → 调度队列 |
+| **层级冲突** | `UIManager.Activate()` | 按层级规则关闭冲突 UI |
 
 PrefabPath 和 Layer 由 Controller 的 `abstract` 属性声明，UIManager 直接从 `controller.PrefabPath` / `controller.Layer` 读取，不需要外部配置。
 
@@ -36,19 +45,19 @@ PrefabPath 和 Layer 由 Controller 的 `abstract` 属性声明，UIManager 直�
 ├──────────────────────────────────────────────────┤
 │                UIManager                           │
 │  ┌──────────────────────┐ ┌──────────────────┐   │
-│  │ UIControllerRegistry │ │   UIViewCache    │   │
-│  │ (工厂 + 持久化)       │ │ (隐藏View复用)    │   │
+│  │ UIControllerRegistry │ │   (隐藏View复用)  │   │
 │  └──────────────────────┘ └──────────────────┘   │
 │  ┌──────────────────────────────────────────┐    │
-│  │    队列调度 · 三层级栈 · 动画编排          │    │
+│  │  队列调度 · 三层级栈 · 层级仲裁           │    │
 │  └──────────────────────────────────────────┘    │
 ├──────────────────────┬───────────────────────────┤
 │  UIView (表现层)       │  UIController<T> (逻辑层)   │
-│  - PlayEnterAnimation│  - OnInit(首次,View已就绪) │
-│  - PlayExitAnimation │  - OnOpen(args, 动画后)   │
-│  - IsInteractable    │  - PrefabPath / Layer     │
-│  - (无框架引用)       │  - StateMachine 内置     │
+│  - PlayEnterAnimation│  - EnterAsync() 编排入场   │
+│  - PlayExitAnimation │  - ExitAsync()  编排退场   │
+│  - IsInteractable    │  - OnInit / OnOpen / OnHide│
 │                      │  - CloseSelf()             │
+│                      │  - PrefabPath / Layer      │
+│                      │  - StateMachine 内置       │
 ├──────────────────────┴───────────────────────────┤
 │  AssetMgr (单例)                                  │
 │  内部全部以 Type 做键                              │
@@ -146,6 +155,10 @@ public interface IUIController
     void OnOpen(object args);   // 每次打开：动画结束后，携带 Open<T> 传入的参数。UI 可见可交互
     void OnHide();      // 退场前
     void OnDispose();   // 清理
+
+    // === 生命周期编排（UIManager 委托给 Controller） ===
+    UniTask<bool> EnterAsync();  // 入场：设置交互→播放动画。返回 false 表示中断
+    UniTask ExitAsync();         // 退场：关闭交互→OnHide→播放动画→隐藏 View
 }
 ```
 
@@ -158,7 +171,6 @@ public abstract class UIController<T> : IUIController where T : UIView
 {
     // === 框架注入 ===
     public T View { get; private set; }
-    internal Action CloseAction { get; set; }
     internal UIStateMachine StateMachine { get; } = new();
     internal bool PendingClose { get; set; }         // Close 请求在加载/动画中途到达时标记
 
@@ -182,6 +194,41 @@ public abstract class UIController<T> : IUIController where T : UIView
             Debug.LogError($"[UIFrameworkLib] 类型不匹配: {typeof(T).Name} vs {view?.GetType().Name}");
     }
 
+    // === 生命周期编排 ===
+    public virtual async UniTask<bool> EnterAsync()
+    {
+        TryTransition(UIState.AnimationEnter);
+
+        var view = View;
+        view.IsInteractable = false;
+        view.SetInteractive(false);
+
+        var tcs = new UniTaskCompletionSource();
+        view.PlayEnterAnimation(() => tcs.TrySetResult());
+        await tcs.Task;
+
+        return IsInAnimation;  // false = 中途被中断
+    }
+
+    public virtual async UniTask ExitAsync()
+    {
+        if (!IsOpened) return;
+
+        TryTransition(UIState.AnimationExit);
+
+        var view = View;
+        view.IsInteractable = false;
+        OnHide();
+        view.SetInteractive(false);
+
+        var tcs = new UniTaskCompletionSource();
+        view.PlayExitAnimation(() => tcs.TrySetResult());
+        await tcs.Task;
+
+        TryTransition(UIState.Closed);
+        view.gameObject.SetActive(false);
+    }
+
     // === 生命周期（业务层重写） ===
     protected internal virtual void OnInit() { }
     protected internal virtual void OnOpen(object args) { }    // 每次 · 动画已结束
@@ -189,7 +236,7 @@ public abstract class UIController<T> : IUIController where T : UIView
     protected internal virtual void OnDispose() { }
 
     // === 辅助 ===
-    protected void CloseSelf() => CloseAction?.Invoke();
+    protected void CloseSelf() => UIManager.Instance.Close<T>();
 }
 ```
 
@@ -263,9 +310,10 @@ public static class UIControllerRegistry
     }
 
     public static T GetController<T>() where T : IUIController
-    {
-        return m_AllControllers.TryGetValue(typeof(T), out var c) ? (T)c : default;
-    }
+        => (T)GetController(typeof(T));
+
+    public static IUIController GetController(Type type)
+        => m_AllControllers.TryGetValue(type, out var c) ? c : null;
 
     public static void Clear()
     {
@@ -285,9 +333,12 @@ public static class UIControllerRegistry
 ```
 Open<T>(args)：
   同一界面已 Opened → 直接 OnOpen(args)
-  已有排队项 → 替换（队列深度 = 1）
+  顶层 UI 忙（加载/动画）→ 入队等待（QueueMode.WaitForAnimation）
+  顶层 UI 已打开且要求等关闭 → 入队等待（QueueMode.WaitForClose）
   空闲 → 立即执行
 ```
+
+队列支持 N 个排队项，按 FIFO 顺序依次执行。`ProcessQueue()` 在 `StartOpening` 和 `OnExitCleanup` 的 finally 中触发。
 
 ### 6.5 层级与栈管理
 
@@ -412,7 +463,7 @@ public class UIManager : Singleton<UIManager>
 
     private async void StartOpening(Type key, object args)
     {
-        var ctrl = UIControllerRegistry.GetController<T>();
+        var ctrl = UIControllerRegistry.GetController(key);
         ctrl.TryTransition(UIState.Loading);
 
         try
@@ -421,8 +472,8 @@ public class UIManager : Singleton<UIManager>
             if (ctrl.PendingClose) { AbortToCache(key, ctrl); return; }
 
             Activate(ctrl);
-            if (!await PlayEnter(ctrl)) return;
-            if (ctrl.PendingClose) { StartExit(key, ctrl); return; }
+            if (!await ctrl.EnterAsync()) return;
+            if (ctrl.PendingClose) { StartExit(ctrl); return; }
 
             ctrl.TryTransition(UIState.Opened);
             ctrl.View.SetInteractive(true);
@@ -473,25 +524,9 @@ public class UIManager : Singleton<UIManager>
             var instance = Object.Instantiate(prefab, UIRoot.Instance.GetLayer(ctrl.Layer));
             view = instance.GetComponent<UIView>();
             ctrl.SetView(view);
-            (ctrl as UIController<...>).CloseAction = () => CloseByType(key);
             ctrl.OnInit();
         }
         
-        return true;
-    }
-
-    /// <returns>是否继续</returns>
-    private async Task<bool> PlayEnter(IUIController ctrl)
-    {
-        var view = ctrl.View;
-        view.IsInteractable = false;
-        view.SetInteractive(false);
-
-        var tcs = new UniTaskCompletionSource();
-        view.PlayEnterAnimation(() => tcs.TrySetResult());
-        await tcs.Task;
-
-        if (!ctrl.IsInAnimation) { AbortOpen(ctrl); return false; }
         return true;
     }
 
@@ -508,30 +543,16 @@ public class UIManager : Singleton<UIManager>
         if (ctrl == null) return;
 
         if (ctrl.IsOpened)
-            StartExit(key, ctrl);
+            StartExit(ctrl);
         else
             ctrl.PendingClose = true;  // 加载 / 动画中 → 标记
     }
 
-    private async void StartExit(Type key, IUIController ctrl)
+    private async void StartExit(IUIController ctrl)
     {
-        if (!ctrl.IsOpened) return;
-
-        ctrl.TryTransition(UIState.AnimationExit);
-
         try
         {
-            var view = ctrl.View;
-            view.IsInteractable = false;
-            ctrl.OnHide();
-            view.SetInteractive(false);
-
-            var tcs = new UniTaskCompletionSource();
-            view.PlayExitAnimation(() => tcs.TrySetResult());
-            await tcs.Task;
-
-            ctrl.TryTransition(UIState.Closed);
-            view.gameObject.SetActive(false);
+            await ctrl.ExitAsync();
         }
         catch (Exception e)
         {
@@ -539,10 +560,16 @@ public class UIManager : Singleton<UIManager>
         }
         finally
         {
-            _stacks[ctrl.Layer].Pop();
-            RestorePreviousNormal();
-            ProcessQueue();
+            OnExitCleanup(ctrl);
         }
+    }
+
+    /// <summary>退出后的栈管理 + 队列调度</summary>
+    private void OnExitCleanup(IUIController ctrl)
+    {
+        _stacks[ctrl.Layer].Pop();
+        RestorePreviousNormal();
+        ProcessQueue();
     }
 
     // ================================================================
@@ -579,7 +606,7 @@ public class UIManager : Singleton<UIManager>
             case UILayer.Background:
                 CloseAllNormalAndPopup();
                 if (_stacks[UILayer.Background].Count > 0)
-                    StartExit(_stacks[UILayer.Background].Peek().GetType(), _stacks[UILayer.Background].Peek());
+                    StartExit(_stacks[UILayer.Background].Peek());
                 _stacks[UILayer.Background].Push(ctrl);
                 break;
             case UILayer.Normal:
@@ -589,7 +616,7 @@ public class UIManager : Singleton<UIManager>
                 break;
             case UILayer.Popup:
                 if (_stacks[UILayer.Popup].Count > 0)
-                    StartExit(_stacks[UILayer.Popup].Peek().GetType(), _stacks[UILayer.Popup].Peek());
+                    StartExit(_stacks[UILayer.Popup].Peek());
                 _stacks[UILayer.Popup].Push(ctrl);
                 break;
         }
@@ -603,7 +630,6 @@ public class UIManager : Singleton<UIManager>
             var top = _stacks[UILayer.Normal].Peek();
             if (top.IsOpened)
             {
-                top.OnOpen(null);
                 top.View.SetInteractive(true);
             }
         }
@@ -612,9 +638,9 @@ public class UIManager : Singleton<UIManager>
     private void CloseAllNormalAndPopup()
     {
         if (_stacks[UILayer.Popup].Count > 0)
-            StartExit(_stacks[UILayer.Popup].Peek().GetType(), _stacks[UILayer.Popup].Peek());
+            StartExit(_stacks[UILayer.Popup].Peek());
         foreach (var n in _stacks[UILayer.Normal].ToArray())
-            StartExit(n.GetType(), n);
+            StartExit(n);
         _stacks[UILayer.Normal].Clear();
         _stacks[UILayer.Popup].Clear();
     }
@@ -622,7 +648,7 @@ public class UIManager : Singleton<UIManager>
     private void CloseAllPopup()
     {
         if (_stacks[UILayer.Popup].Count > 0)
-            StartExit(_stacks[UILayer.Popup].Peek().GetType(), _stacks[UILayer.Popup].Peek());
+            StartExit(_stacks[UILayer.Popup].Peek());
         _stacks[UILayer.Popup].Clear();
     }
 
