@@ -20,8 +20,10 @@
 | 层 | 可以做什么 | 不可以做什么 |
 |----|-----------|-------------|
 | **UIView** (MonoBehaviour) | 动画、交互控制、遮罩、组件绑定 | 访问 Controller/UIContext、调用业务 API |
-| **UIController\<T\>** (纯 C#) | 业务逻辑、事件订阅、数据刷新 | 创建/加载/销毁 View、访问框架单例、知道 Config 存在 |
+| **UIController\<T\>** (纯 C#) | 业务逻辑、事件订阅、数据刷新、声明 PrefabPath + Layer | 创建/加载/销毁 View、访问框架单例 |
 | **UIManager** | 生命周期编排、View 加载/缓存/实例化、队列调度 | 处理具体业务逻辑 |
+
+PrefabPath 和 Layer 由 Controller 的 `abstract` 属性声明，UIManager 直接从 `controller.PrefabPath` / `controller.Layer` 读取，不需要外部配置。
 
 ---
 
@@ -44,14 +46,13 @@
 │  UIView (表现层)       │  UIController<T> (逻辑层)   │
 │  - PlayEnterAnimation│  - OnInit(首次,View已就绪) │
 │  - PlayExitAnimation │  - OnOpen(args, 动画后)   │
-│  - SetInteractive    │  - OnHide / OnDispose     │
+│  - SetInteractive    │  - PrefabPath / Layer     │
 │  - (无框架引用)       │  - CloseSelf()             │
 │                      │  - (仅持有 CloseAction)     │
 ├──────────────────────┴───────────────────────────┤
-│  AssetMgr (单例) · UIConfigLoader              │
-│  UIContext (internal) · UIItemConfig (DTO)         │
-│                                                    │
-│  内部全部以 Type 做键，无 string 中转                │
+│  AssetMgr (单例)                                  │
+│  UIContext (internal)                             │
+│  内部全部以 Type 做键                              │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -95,7 +96,6 @@ internal class UIContext
     public Type ControllerType { get; }        // typeof(ShopController)，框架内部唯一标识
     public UIView View { get; set; }
     public IUIController Controller { get; set; }
-    public UIItemConfig Config { get; }        // 加载后保留，供层级判断等
     public UIStateMachine StateMachine { get; } = new();
 
     public bool IsOpened      => StateMachine.CurrentState == UIState.Opened;
@@ -110,25 +110,7 @@ internal class UIContext
 }
 ```
 
-### 3.4 配置模型 UIItemConfig
-
-**文件：** Core/UIItemConfig.cs
-
-框架内部 DTO，不注入给 Controller。外部配置数据（JSON/Luban/SO）经此结构进入框架。
-
-```csharp
-public class UIItemConfig
-{
-    public string PrefabPath { get; set; }  // 资源路径（唯一数据源）
-    public UILayer Layer { get; set; }      // Background / Normal / Popup
-}
-```
-
-- `PrefabPath` 只在 UIManager 加载 View 时使用，Controller 不需要知道
-- `Layer` 只在 UIManager 层级路由时使用
-- 外部配置文件中可以保留 `uiKey` 字符串用于配置表的人类可读索引，但加载后以 `Type` 为键存储
-
-### 3.5 层级枚举 UILayer
+### 3.4 层级枚举 UILayer
 
 | 层级 | 枚举值 | 行为 |
 |------|--------|------|
@@ -204,6 +186,10 @@ public abstract class UIController<T> : IUIController where T : UIView
     public T View { get; private set; }
     internal Action CloseAction { get; set; }  // 唯一注入
 
+    // === 静态元数据（子类声明，UIManager 读取） ===
+    public abstract string PrefabPath { get; }
+    public abstract UILayer Layer { get; }
+
     // === IUIController 显式实现 ===
     void IUIController.SetView(UIView view)
     {
@@ -228,6 +214,9 @@ public abstract class UIController<T> : IUIController where T : UIView
 ```csharp
 public class ShopController : UIController<ShopView>
 {
+    public override string PrefabPath => "Prefabs/ShopPanel";
+    public override UILayer Layer => UILayer.Normal;
+
     protected internal override void OnInit()
     {
         View.m_BtnClose.onClick.AddListener(CloseSelf);
@@ -261,7 +250,6 @@ public class UIManager : Singleton<UIManager>
     // 调试用
     public int ActiveCount { get; }
     public int CachedViewCount => _viewCache.Count;
-    public UIConfigLoader ConfigLoader { get; } = new();
 }
 ```
 
@@ -288,24 +276,41 @@ internal class UIViewCache
 ```csharp
 internal class UIControllerRegistry
 {
-    // 手动注册（可选）
-    public void Register(Type controllerType);
+    private Dictionary<Type, IUIController> m_AllControllers = new();
 
-    // 获取或创建。返回 (controller, isFirstTime)
-    public (IUIController controller, bool isFirstTime) GetOrCreate(Type controllerType);
+    /// <summary>启动时扫描并创建所有 IUIController 实例</summary>
+    public void InitControllers()
+    {
+        var subTypes = AppDomain.CurrentDomain.GetAssemblies()
+            .SelectMany(a => a.GetTypes())
+            .Where(t => typeof(IUIController).IsAssignableFrom(t) && !t.IsAbstract && !t.IsInterface);
 
-    // 自动扫描：启动时遍历所有 IUIController 实现，注册自身 Type
-    public void AutoRegister();
+        m_AllControllers.Clear();
+        foreach (var item in subTypes)
+        {
+            var con = Activator.CreateInstance(item) as IUIController;
+            m_AllControllers[item] = con;  // Type 为键
+        }
+    }
 
-    // 通过 Config 中的 uiKey 字符串查找 Type（仅外部配置加载时用一次）
-    public Type FindType(string configUIKey);
+    /// <summary>获取 Controller（首次调用 OnInit 由外部根据 View == null 判断）</summary>
+    public T GetController<T>() where T : IUIController
+    {
+        return m_AllControllers.TryGetValue(typeof(T), out var c) ? (T)c : default;
+    }
 
-    public void Clear();
+    public void Clear()
+    {
+        foreach (var kv in m_AllControllers)
+            (kv.Value as IDisposable)?.Dispose();
+        m_AllControllers.Clear();
+    }
 }
 ```
 
-- `AutoRegister()` 扫描 `AppDomain.CurrentDomain.GetAssemblies()` 中所有 `IUIController` 实现，`controllerType` 即键。
-- 外部配置加载时：`FindType("Shop")` → `typeof(ShopController)`，之后全部走 Type。这是 string 在框架内的唯一入口。
+- `InitControllers()` 启动时调用一次，扫描并创建所有 `IUIController` 实例，Type 为键。
+- `GetController<T>()` 直接返回已创建的实例。
+- 不再需要 `isFirstTime` 标志——`UIController<T>.View == null` 即表示首次。
 
 ### 6.4 队列调度
 
@@ -345,26 +350,9 @@ public class AssetMgr : Singleton<AssetMgr>
 - 继承 `Singleton<AssetMgr>`，通过 `AssetMgr.Instance` 访问
 - 需要切换 Addressables / AssetBundle 时直接修改此类源码
 
-## 八、UIConfigLoader 配置加载器
-
-**文件：** Config/UIConfigLoader.cs
-
-```csharp
-public class UIConfigLoader
-{
-    public void Load(List<(string uiKey, UIItemConfig config)> rawConfigs);
-    // 内部：通过 Registry.FindType(uiKey) 将 string 转为 Type，以 Dictionary<Type, UIItemConfig> 存储
-
-    public UIItemConfig Get(Type controllerType);
-    public void Reload(...);
-}
-```
-
-- 外部数据源提供的 `uiKey` 字符串仅在 `Load()` 时转换一次，框架内部不再流通 string。
-
 ---
 
-## 九、UIRoot
+## 八、UIRoot
 
 **文件：** UIView/UIRoot.cs
 
@@ -377,9 +365,9 @@ public class UIConfigLoader
 
 ---
 
-## 十、生命周期流程
+## 九、生命周期流程
 
-### 10.1 打开流程
+### 9.1 打开流程
 
 ```
 Open<T>(args)
@@ -388,29 +376,31 @@ Open<T>(args)
   → ExecuteOpen(key, args)
 
 ExecuteOpen:
-  1. Config = ConfigLoader.Get(key)  → PrefabPath, Layer
-  2. 创建 Context(key, config), 状态 → Loading
-  3. _registry.GetOrCreate(key) → (controller, isFirstTime)
-  4. View 加载：
+  1. controller = _registry.GetController<T>()
+     → PrefabPath = controller.PrefabPath
+     → Layer = controller.Layer
+  2. 创建 Context(key), 状态 → Loading
+  3. View 加载：
      a. _viewCache.Get(key) → 有缓存 SetActive(true)
      b. 无缓存 → AssetMgr.Instance.LoadPrefabAsync(PrefabPath)
      → Instantiate(prefab, UIRoot.GetLayer(Layer))
-  5. 状态检查（仍 Loading？）
+  4. 状态检查（仍 Loading？）
+  5. bool isFirstView = controller.View == null
   6. controller.SetView(view)
   7. 注入 CloseAction 到 controller
-  8. if (isFirstTime) controller.OnInit()  ← View 已就绪
+  8. if (isFirstView) controller.OnInit()     ← 首次设置 View
   9. 层级注册 → 状态 AnimationEnter
-  10. view.IsInteractable = false          ← 框架设置标记
-  11. view.SetInteractive(false)           ← CanvasGroup 关闭射线
+  10. view.IsInteractable = false             ← 框架设置标记
+  11. view.SetInteractive(false)              ← CanvasGroup 关闭射线
   12. view.PlayEnterAnimation() → await
   13. 状态 → Opened
   14. view.SetInteractive(true)
-  15. view.IsInteractable = true           ← 框架恢复标记
-  16. controller.OnOpen(args)   ← 携带原始参数
+  15. view.IsInteractable = true              ← 框架恢复标记
+  16. controller.OnOpen(args)                ← 携带原始参数
   17. ProcessNext()
 ```
 
-### 10.2 关闭流程
+### 9.2 关闭流程
 
 ```
 StartExit(ctx):
@@ -426,7 +416,7 @@ StartExit(ctx):
   10. ProcessNext()
 ```
 
-### 10.3 关闭全部
+### 9.3 关闭全部
 
 ```
 CloseAll():
@@ -438,9 +428,9 @@ CloseAll():
 
 ---
 
-## 十一、动画系统
+## 十、动画系统
 
-### 11.1 设计原则
+### 10.1 设计原则
 
 - UIView 不内置动画实现，通过静态类 `AnimationFactory` 调用
 - 每个动画效果一个策略类，同时包含 Enter 和 Exit 两个动作
@@ -448,7 +438,7 @@ CloseAll():
 - 默认使用 `UniTask` + `Time.deltaTime` 驱动
 - 替换方式：继承重写策略类，或修改 `AnimationFactory` 的 switch 分支
 
-### 11.2 动画类型枚举
+### 10.2 动画类型枚举
 
 **文件：** Animation/UIAnimationType.cs
 
@@ -464,7 +454,7 @@ public enum UIAnimationType
 }
 ```
 
-### 11.3 策略接口
+### 10.3 策略接口
 
 **文件：** Animation/IAnimationStrategy.cs
 
@@ -476,7 +466,7 @@ public interface IAnimationStrategy
 }
 ```
 
-### 11.4 静态工厂 AnimationFactory
+### 10.4 静态工厂 AnimationFactory
 
 **文件：** Animation/AnimationFactory.cs
 
@@ -515,7 +505,7 @@ public static class AnimationFactory
 }
 ```
 
-### 11.5 动画策略类
+### 10.5 动画策略类
 
 **目录：** `Animation/Strategies/`
 
@@ -567,7 +557,7 @@ public class FadeStrategy : IAnimationStrategy
 }
 ```
 
-### 11.6 使用方式
+### 10.6 使用方式
 
 ```csharp
 // UIView 子类
@@ -584,7 +574,7 @@ public class ShopView : UIView
 
 ---
 
-## 十二、编辑器调试窗口
+## 十一、编辑器调试窗口
 
 **文件：** Editor/UIEditorWindow.cs
 
@@ -592,7 +582,7 @@ public class ShopView : UIView
 
 ---
 
-## 十三、目录结构
+## 十二、目录结构
 
 ```
 Assets/Scripts/UIFrameworkLib/
@@ -600,8 +590,7 @@ Assets/Scripts/UIFrameworkLib/
 │   ├── Singleton.cs
 │   ├── UILayer.cs
 │   ├── UIStateMachine.cs
-│   ├── UIItemConfig.cs
-│   ├── UIContext.cs              (internal)
+│   └── UIContext.cs              (internal)
 ├── Animation/
 │   ├── UIAnimationType.cs
 │   ├── IAnimationStrategy.cs
@@ -624,8 +613,6 @@ Assets/Scripts/UIFrameworkLib/
 │   ├── UIViewCache.cs
 │   ├── UIControllerRegistry.cs
 │   └── AssetMgr.cs
-├── Config/
-│   └── UIConfigLoader.cs
 └── Editor/
     └── UIEditorWindow.cs
 ```
@@ -634,21 +621,7 @@ Assets/Scripts/UIFrameworkLib/
 
 ---
 
-## 十四、v12 vs v11 变更对比
-
-| v11 | v12 | 原因 |
-|-----|-----|------|
-| `UIKeyResolver` 解析 Type→string | 删除。内部直接用 `typeof(T)` | 框架内部没有必须用 string 的场景 |
-| `Dictionary<string, ...>` 做字典键 | `Dictionary<Type, ...>` | 类型安全，零开销，无命名约定绑定 |
-| Controller 注入 `Config` | 删除。只注入 `CloseAction` | Controller 不需要 PrefabPath/Layer/UIKey |
-| `UIContext.UIKey` (string) | `UIContext.ControllerType` (Type) | 与字典键一致 |
-| `Open(string)` / `Close(string)` 重载 | 删除 | 无使用场景 |
-| `UIConfigLoader.Get(string)` | `Get(Type)` | 仅 Load 时做一次 string→Type 转换 |
-| `UIItemConfig.UIKey` | 从框架内删除 | Load 后不需要，外部配置可保留但不流入框架 |
-
----
-
-## 十五、变更记录
+## 十三、变更记录
 
 | 版本 | 变更内容 |
 |------|---------|
@@ -664,3 +637,6 @@ Assets/Scripts/UIFrameworkLib/
 | v18 | **AnimationFactory 重构：** `UIAnimation` 改名 `AnimationFactory`，`Play` 拆为 `PlayEnter`/`PlayExit`；策略类合并（FadeEnter+Exit→FadeStrategy），Enter/Exit 合入一个策略类；枚举精简（FadeEnter/Exit → Fade）；不做预注册字典，按枚举即时 new |
 | v18.1 | **动画策略加缓存：** `AnimationFactory` 内部 `Dictionary<UIAnimationType, IAnimationStrategy>` 缓存首次创建的策略实例 |
 | v19 | **修 OnOpen 参数 + AssetMgr 去 virtual：** `OnOpen()` 恢复为 `OnOpen(object args)`，已打开刷新时传递新参数；`AssetMgr.LoadPrefabAsync` 去除 `virtual`（Singleton 下继承重写无意义） |
+| v20 | **UIControllerRegistry 预创建：** `InitControllers()` 启动时扫描+批量 `Activator.CreateInstance` 所有 Controller，`GetController<T>()` 直接返回；删除 `Register`/`GetOrCreate`/`AutoRegister`；`isFirstTime` 改为 `controller.View == null` 在 SetView 前判断 |
+| v21 | **UIConfigLoader → UIConfigMgr 静态化：** 重命名并改为 `static class`；`Load()`/`Get()`/`Reload()` 改为静态方法；`FindType` 改为 `public static` 供调用；UIManager 不再持有 `ConfigLoader` 属性 |
+| v22 | **删除 UIItemConfig + UIConfigMgr：** PrefabPath 和 Layer 移到 `UIController<T>` 的 `abstract` 属性，由子类声明；删除 `Core/UIItemConfig.cs`、`Config/UIConfigMgr.cs`；框架不再需要外部配置加载 |
