@@ -377,16 +377,6 @@ public class UIManager : Singleton<UIManager>
             return;
         }
 
-        // 已在队列中 → 替换参数
-        foreach (var qi in _queue)
-        {
-            if (qi.ControllerType == key)
-            {
-                qi.Args = args;
-                return;
-            }
-        }
-
         // 空闲 → 直接执行
         if (!IsBusy)
         {
@@ -683,9 +673,8 @@ public class UIManager : Singleton<UIManager>
 ```
 Open<T>(args)
   └─┬─ 已 Opened → OnOpen(args)  // 刷新，清除 PendingClose
-    ├─ 已在队列   → 替换 args     // 去重
-    ├─ 忙         → 入队(上限5)   // 等待
-    └─ 空闲       → StartOpening  // 立即执行
+     ├─ 忙         → 入队(上限5)   // 等待
+     └─ 空闲       → StartOpening  // 立即执行
 
 StartOpening:
   LoadView → if PendingClose → AbortToCache(缓存,不弹出)
