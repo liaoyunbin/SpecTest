@@ -343,7 +343,6 @@ public class UIManager : Singleton<UIManager>
 {
     // === 内部字段 ===
     private Dictionary<Type, GameObject> _viewCache = new();
-    private Dictionary<Type, IUIController> _visibleControllers = new();
     private Dictionary<UILayer, Stack<IUIController>> _stacks = new()
     {
         [UILayer.Background] = new(),
@@ -351,15 +350,20 @@ public class UIManager : Singleton<UIManager>
         [UILayer.Popup]      = new(),
     };
 
-    // === 通道 ===
-    private enum ChannelState { Idle, Entering, Exiting }
-    private ChannelState _channelState;
-    private IUIController _channelController;
-    private bool IsBusy => _channelState != ChannelState.Idle;
-
     // === 队列 ===
     private Queue<QueueItem> _queue = new();
-    private const int MAX_QUEUE_SIZE = 5;
+
+    // === 工具 ===
+    private IUIController GetTopMostUI()
+    {
+        if (_stacks[UILayer.Popup].Count > 0)
+            return _stacks[UILayer.Popup].Peek();
+        if (_stacks[UILayer.Normal].Count > 0)
+            return _stacks[UILayer.Normal].Peek();
+        if (_stacks[UILayer.Background].Count > 0)
+            return _stacks[UILayer.Background].Peek();
+        return null;
+    }
 
     // ================================================================
     // 9.2 Open<T>
@@ -368,26 +372,25 @@ public class UIManager : Singleton<UIManager>
     public void Open<T>(object args = null) where T : IUIController
     {
         Type key = typeof(T);
+        var topUI = GetTopMostUI();
 
-        // 已打开 → 直接刷新
-        if (_visibleControllers.TryGetValue(key, out var ctrl) && ctrl.IsOpened)
+        // 最顶层UI就是目标且已打开 → 直接刷新
+        if (topUI != null && topUI.GetType() == key && topUI.IsOpened)
         {
-            ctrl.PendingClose = false;
-            ctrl.OnOpen(args);
+            topUI.PendingClose = false;
+            topUI.OnOpen(args);
             return;
         }
 
-        // 空闲 → 直接执行
-        if (!IsBusy)
+        // 最顶层UI正在加载/动画中 → 入队等待
+        if (topUI != null && (topUI.IsLoading || topUI.IsInAnimation))
         {
-            StartOpening(key, args);
+            _queue.Enqueue(new QueueItem { ControllerType = key, Args = args });
             return;
         }
 
-        // 忙 → 入队
-        if (_queue.Count >= MAX_QUEUE_SIZE)
-            _queue.Dequeue();
-        _queue.Enqueue(new QueueItem { ControllerType = key, Args = args });
+        // 其他情况 → 直接执行
+        StartOpening(key, args);
     }
 
     // ================================================================
@@ -398,8 +401,6 @@ public class UIManager : Singleton<UIManager>
     {
         var ctrl = UIControllerRegistry.GetController<T>();
         ctrl.TryTransition(UIState.Loading);
-        _channelState = ChannelState.Entering;
-        _channelController = ctrl;
 
         try
         {
@@ -422,8 +423,6 @@ public class UIManager : Singleton<UIManager>
         }
         finally
         {
-            _channelState = ChannelState.Idle;
-            _channelController = null;
             ProcessQueue();
         }
     }
@@ -451,7 +450,7 @@ public class UIManager : Singleton<UIManager>
             view = instance.GetComponent<UIView>();
         }
 
-        if (!ctrl.IsLoading) { DestroyView(ctrl); AbortOpen(ctrl); return false; }
+        if (!ctrl.IsLoading) { DestroyView(ctrl); return false; }
 
         bool isFirstView = ctrl.View == null;
         ctrl.SetView(view);
@@ -484,13 +483,13 @@ public class UIManager : Singleton<UIManager>
 
     private void CloseByType(Type key)
     {
-        if (_visibleControllers.TryGetValue(key, out var ctrl))
-        {
-            if (ctrl.IsOpened)
-                StartExit(key, ctrl);
-            else
-                ctrl.PendingClose = true;  // 加载 / 动画中 → 标记
-        }
+        var ctrl = FindController(key);
+        if (ctrl == null) return;
+
+        if (ctrl.IsOpened)
+            StartExit(key, ctrl);
+        else
+            ctrl.PendingClose = true;  // 加载 / 动画中 → 标记
     }
 
     private async void StartExit(Type key, IUIController ctrl)
@@ -498,8 +497,6 @@ public class UIManager : Singleton<UIManager>
         if (!ctrl.IsOpened) return;
 
         ctrl.TryTransition(UIState.AnimationExit);
-        _channelState = ChannelState.Exiting;
-        _channelController = ctrl;
 
         try
         {
@@ -522,12 +519,8 @@ public class UIManager : Singleton<UIManager>
         }
         finally
         {
-            _visibleControllers.Remove(key);
             _stacks[ctrl.Layer].Pop();
             RestorePreviousNormal();
-
-            _channelState = ChannelState.Idle;
-            _channelController = null;
             ProcessQueue();
         }
     }
@@ -540,32 +533,22 @@ public class UIManager : Singleton<UIManager>
     {
         _queue.Clear();
 
-        if (_channelState == ChannelState.Entering && _channelController != null)
+        foreach (var stack in _stacks.Values)
         {
-            _channelController.TryTransition(UIState.Closed);
-            if (_channelController.View != null) Object.Destroy(_channelController.View.gameObject);
+            foreach (var ctrl in stack)
+            {
+                ctrl.TryTransition(UIState.Closed);
+                ctrl.OnDispose();
+                if (ctrl.View != null) Object.Destroy(ctrl.View.gameObject);
+            }
+            stack.Clear();
         }
-
-        foreach (var kv in _visibleControllers)
-        {
-            var ctrl = kv.Value;
-            if (_channelState == ChannelState.Exiting && ctrl == _channelController) continue;
-            ctrl.TryTransition(UIState.Closed);
-            ctrl.OnDispose();
-            if (ctrl.View != null) Object.Destroy(ctrl.View.gameObject);
-        }
-
-        _visibleControllers.Clear();
-        foreach (var stack in _stacks.Values) stack.Clear();
 
         foreach (var go in _viewCache.Values)
             if (go != null) Object.Destroy(go);
         _viewCache.Clear();
 
         UIControllerRegistry.Clear();
-
-        _channelState = ChannelState.Idle;
-        _channelController = null;
     }
 
     // ================================================================
@@ -574,7 +557,6 @@ public class UIManager : Singleton<UIManager>
 
     private void Activate(IUIController ctrl)
     {
-        _visibleControllers[ctrl.GetType()] = ctrl;
         switch (ctrl.Layer)
         {
             case UILayer.Background:
@@ -642,7 +624,6 @@ public class UIManager : Singleton<UIManager>
         ctrl.View.gameObject.SetActive(false);
         _viewCache[key] = ctrl.View.gameObject;
         ctrl.TryTransition(UIState.Closed);
-        _visibleControllers.Remove(key);
     }
 
     /// <summary>加载或动画异常 → 销毁 View</summary>
@@ -650,14 +631,12 @@ public class UIManager : Singleton<UIManager>
     {
         ctrl.OnDispose();
         if (ctrl.View != null) Object.Destroy(ctrl.View.gameObject);
-        _visibleControllers.Remove(ctrl.GetType());
     }
 
     private void DestroyView(IUIController ctrl)
     {
         ctrl.TryTransition(UIState.Closed);
         if (ctrl.View != null) Object.Destroy(ctrl.View.gameObject);
-        _visibleControllers.Remove(ctrl.GetType());
     }
 
     private class QueueItem
@@ -673,36 +652,35 @@ public class UIManager : Singleton<UIManager>
 ```
 Open<T>(args)
   └─┬─ 已 Opened → OnOpen(args)  // 刷新，清除 PendingClose
-     ├─ 忙         → 入队(上限5)   // 等待
-     └─ 空闲       → StartOpening  // 立即执行
+    ├─ 忙         → 入队(上限5)   // 等待
+    └─ 空闲       → StartOpening  // 立即执行
 
 StartOpening:
   LoadView → if PendingClose → AbortToCache(缓存,不弹出)
-  Activate
+  Activate → Push 到 _stacks[layer]
   PlayEnter → if PendingClose → StartExit(退场)
   Opened → OnOpen(args)
 
 Close<T>:
-  已 Opened → StartExit
+  已 Opened → StartExit → Pop + 缓存 View
   加载/动画中 → PendingClose = true
 
 CloseAll:
-  清队列 + 中断通道 + 全部 Destroy + 清缓存 + 清 Registry
+  清队列 + 三层栈全遍历 Destroy + 清缓存 + 清 Registry
 ```
 
 ---
 
-### 九 (续) — v23 vs 当前版对比
+### 九 (续) — 最终精简对比
 
 | 优化点 | 旧 | 新 |
 |--------|----|----|
-| 双通道 | `_enteringController` + `_exitingController` (2 字段) | `(ChannelState, _channelController)` |
-| 编排 | 一个 ExecuteOpen 大方法，行内注释分段 | `StartOpening` → `LoadView` → `Activate` → `PlayEnter` |
-| 队列 | 1 个 QueueItem | `Queue<QueueItem>`，上限 5 |
-| 去重 | 只检查 `_queuedItem` | `foreach` 遍历队列 |
-| 命名 | `_activeControllers` / `RegisterController` / `UnregisterController` / `CleanupAndNext` | `_visibleControllers` / `Activate` / 内联 / `AbortOpen` / `AbortToCache` |
-| `_isProcessing` | 独立 bool | 删掉，`IsBusy` 已覆盖 |
-| PendingClose | 无 | 新增 — 加载/动画中途 Close 被标记，阶段完成时处理 |
+| `_visibleControllers` 索引 | `Dictionary<Type, IUIController>` | 删除，`FindController()` 扫三层栈 |
+| 通道状态 | `ChannelState` 枚举 + `_channelState` + `_channelController` | 删除，`IsBusy` 扫三个栈顶 |
+| `IsBusy` | 读 `_channelState` 复本 | 读 `_stacks[layer].Peek().IsLoading \|\| IsInAnimation` |
+| `StartOpening` finally | 重置 `_channelState` + `_channelController` | 无需清理 |
+| `CloseAll` | 分支判断 `ChannelState` + 遍历 `_visibleControllers` | 三个栈全遍历，统一销毁 + Clear |
+| 数据字段 | 7 个 | 3 个 (`_stacks` / `_viewCache` / `_queue`) |
 
 ---
 
