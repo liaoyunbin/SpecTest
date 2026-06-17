@@ -113,14 +113,14 @@ Closed   Closed        Closed      (中断/失败紧急回退)
 public abstract class UIView : MonoBehaviour
 {
     // === 子类重写 ===
-    public virtual void PlayEnterAnimation(Action onComplete)
+    public virtual UniTask PlayEnterAnimation()
     {
-        AnimationFactory.PlayEnter(UIAnimationType.Fade, (RectTransform)transform, 0.3f, onComplete);
+        return AnimationFactory.PlayEnter(UIAnimationType.Fade, (RectTransform)transform, 0.3f);
     }
 
-    public virtual void PlayExitAnimation(Action onComplete)
+    public virtual UniTask PlayExitAnimation()
     {
-        AnimationFactory.PlayExit(UIAnimationType.Fade, (RectTransform)transform, 0.2f, onComplete);
+        return AnimationFactory.PlayExit(UIAnimationType.Fade, (RectTransform)transform, 0.2f);
     }
 
     // === 交互控制 ===
@@ -131,8 +131,8 @@ public abstract class UIView : MonoBehaviour
 
 | 方法 | 说明 |
 |------|------|
-| `PlayEnterAnimation(onComplete)` | 入场动画（virtual，默认淡入 0.3s） |
-| `PlayExitAnimation(onComplete)` | 退场动画（virtual，默认淡出 0.2s） |
+| `PlayEnterAnimation()` | 入场动画（virtual，默认淡入 0.3s），返回 UniTask |
+| `PlayExitAnimation()` | 退场动画（virtual，默认淡出 0.2s），返回 UniTask |
 | `SetInteractive(bool)` | CanvasGroup 级别 interactable + blocksRaycasts |
 | `IsInteractable` (bool 属性) | 框架设置的交互许可标记，业务层在按钮回调中自行判断 |
 
@@ -203,9 +203,7 @@ public abstract class UIController<T> : IUIController where T : UIView
         view.IsInteractable = false;
         view.SetInteractive(false);
 
-        var tcs = new UniTaskCompletionSource();
-        view.PlayEnterAnimation(() => tcs.TrySetResult());
-        await tcs.Task;
+        await view.PlayEnterAnimation();
 
         return IsInAnimation;  // false = 中途被中断
     }
@@ -221,9 +219,7 @@ public abstract class UIController<T> : IUIController where T : UIView
         OnHide();
         view.SetInteractive(false);
 
-        var tcs = new UniTaskCompletionSource();
-        view.PlayExitAnimation(() => tcs.TrySetResult());
-        await tcs.Task;
+        await view.PlayExitAnimation();
 
         TryTransition(UIState.Closed);
         view.gameObject.SetActive(false);
@@ -781,8 +777,8 @@ public enum UIAnimationType
 ```csharp
 public interface IAnimationStrategy
 {
-    void Enter(RectTransform target, float duration, Action onComplete);
-    void Exit(RectTransform target, float duration, Action onComplete);
+    UniTask Enter(RectTransform target, float duration);
+    UniTask Exit(RectTransform target, float duration);
 }
 ```
 
@@ -795,14 +791,14 @@ public static class AnimationFactory
 {
     private static readonly Dictionary<UIAnimationType, IAnimationStrategy> _cache = new();
 
-    public static void PlayEnter(UIAnimationType type, RectTransform target, float duration, Action onComplete)
+    public static UniTask PlayEnter(UIAnimationType type, RectTransform target, float duration)
     {
-        GetStrategy(type).Enter(target, duration, onComplete);
+        return GetStrategy(type).Enter(target, duration);
     }
 
-    public static void PlayExit(UIAnimationType type, RectTransform target, float duration, Action onComplete)
+    public static UniTask PlayExit(UIAnimationType type, RectTransform target, float duration)
     {
-        GetStrategy(type).Exit(target, duration, onComplete);
+        return GetStrategy(type).Exit(target, duration);
     }
 
     private static IAnimationStrategy GetStrategy(UIAnimationType type)
@@ -836,17 +832,17 @@ public static class AnimationFactory
 | `SlideUpStrategy` | SlideUp | 从下往上滑入 | 往上滑出 |
 | `SlideDownStrategy` | SlideDown | 从上往下滑入 | 往下滑出 |
 | `BlackFadeStrategy` | BlackFade | 黑屏渐入 | 黑屏渐出 |
-| `NoneStrategy` | None | 立即回调 | 立即回调 |
+| `NoneStrategy` | None | 立即完成 | 立即完成 |
 
 示例策略实现：
 
 ```csharp
 public class FadeStrategy : IAnimationStrategy
 {
-    public async void Enter(RectTransform target, float duration, Action onComplete)
+    public async UniTask Enter(RectTransform target, float duration)
     {
         var cg = target.GetComponent<CanvasGroup>();
-        if (cg == null) { onComplete?.Invoke(); return; }
+        if (cg == null) return;
         cg.alpha = 0f;
         var elapsed = 0f;
         while (elapsed < duration)
@@ -856,13 +852,12 @@ public class FadeStrategy : IAnimationStrategy
             await UniTask.Yield(PlayerLoopTiming.Update);
         }
         cg.alpha = 1f;
-        onComplete?.Invoke();
     }
 
-    public async void Exit(RectTransform target, float duration, Action onComplete)
+    public async UniTask Exit(RectTransform target, float duration)
     {
         var cg = target.GetComponent<CanvasGroup>();
-        if (cg == null) { onComplete?.Invoke(); return; }
+        if (cg == null) return;
         cg.alpha = 1f;
         var elapsed = 0f;
         while (elapsed < duration)
@@ -872,7 +867,6 @@ public class FadeStrategy : IAnimationStrategy
             await UniTask.Yield(PlayerLoopTiming.Update);
         }
         cg.alpha = 0f;
-        onComplete?.Invoke();
     }
 }
 ```
@@ -883,9 +877,9 @@ public class FadeStrategy : IAnimationStrategy
 // UIView 子类
 public class ShopView : UIView
 {
-    public override void PlayEnterAnimation(Action onComplete)
+    public override UniTask PlayEnterAnimation()
     {
-        AnimationFactory.PlayEnter(UIAnimationType.Scale, (RectTransform)transform, 0.35f, onComplete);
+        return AnimationFactory.PlayEnter(UIAnimationType.Scale, (RectTransform)transform, 0.35f);
     }
 }
 ```
