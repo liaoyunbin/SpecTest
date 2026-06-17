@@ -20,7 +20,7 @@ namespace UIFrameworkLib
             {
                 elapsed += Time.deltaTime;
                 cg.alpha = Mathf.Lerp(0f, 1f, elapsed / duration);
-                UniTask.Yield(PlayerLoopTiming.Update).Forget();
+                UniTask.Yield(PlayerLoopTiming.Update);
             }
             cg.alpha = 1f;
         }
@@ -36,7 +36,7 @@ namespace UIFrameworkLib
             {
                 elapsed += Time.deltaTime;
                 cg.alpha = Mathf.Lerp(1f, 0f, elapsed / duration);
-                UniTask.Yield(PlayerLoopTiming.Update).Forget();
+                UniTask.Yield(PlayerLoopTiming.Update);
             }
             cg.alpha = 0f;
         }

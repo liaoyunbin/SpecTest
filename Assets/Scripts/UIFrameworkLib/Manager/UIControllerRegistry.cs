@@ -9,7 +9,7 @@ namespace UIFrameworkLib
     /// </summary>
     public static class UIControllerRegistry
     {
-        private static readonly Dictionary<string, IUIController> _all = new();
+        private static readonly Dictionary<string, UIController> _all = new();
 
         /// <summary>初始化注册所有 Controller</summary>
         public static void Init()
@@ -18,14 +18,14 @@ namespace UIFrameworkLib
             var types = Type.EmptyTypes;
             foreach (var t in types)
             {
-                if (!typeof(IUIController).IsAssignableFrom(t) || t.IsInterface) continue;
-                var ctrl = (IUIController)Activator.CreateInstance(t);
+                if (!typeof(UIController).IsAssignableFrom(t) || t.IsInterface) continue;
+                var ctrl = (UIController)Activator.CreateInstance(t);
                 _all[t.Name] = ctrl;
             }
         }
 
         /// <summary>通过 Type 获取 Controller</summary>
-        public static IUIController GetController(Type key)
+        public static UIController GetController(Type key)
         {
             return _all.TryGetValue(key.Name, out var ctrl) ? ctrl : null;
         }

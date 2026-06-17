@@ -28,7 +28,7 @@ namespace UIFrameworkLib
         // 字段
         // ================================================================
 
-        private readonly Dictionary<UILayer, Stack<IUIController>> _stacks = new()
+        private readonly Dictionary<UILayer, Stack<UIController>> _stacks = new()
         {
             [UILayer.Background] = new(),
             [UILayer.Normal]     = new(),
@@ -57,7 +57,7 @@ namespace UIFrameworkLib
 
         /// <summary>打开 UI（默认 WaitForAnimation）</summary>
         public void Open<T>(object args = null, QueueMode mode = QueueMode.WaitForAnimation)
-            where T : IUIController
+            where T : UIController
         {
             Open(typeof(T), args, mode);
         }
@@ -98,26 +98,6 @@ namespace UIFrameworkLib
                 StartExit(ctrl);
             else
                 ctrl.PendingClose = true; // 加载 / 动画中 → 标记
-        }
-
-        /// <summary>关闭所有 UI（只隐藏不销毁）</summary>
-        public void CloseAll()
-        {
-            _queue.Clear();
-
-            foreach (var stack in _stacks.Values)
-            {
-                foreach (var ctrl in stack)
-                {
-                    ctrl.TryTransition(UIState.Closed);
-                    ctrl.OnHide();
-                    if (ctrl.View != null)
-                    {
-                        ctrl.View.gameObject.SetActive(false);
-                    }
-                }
-                stack.Clear();
-            }
         }
 
         // ================================================================
@@ -163,7 +143,7 @@ namespace UIFrameworkLib
         }
 
         /// <summary>初始化 View（复用已有或加载新的）</summary>
-        private async UniTask InitView(IUIController ctrl)
+        private async UniTask InitView(UIController ctrl)
         {
             Type key = ctrl.GetType();
 
@@ -186,13 +166,11 @@ namespace UIFrameworkLib
                 AbortOpen(ctrl);
                 return;
             }
-
-            ctrl.SetView(view);
-            ctrl.OnInit();
+            ctrl.OnInit(view);
         }
 
         /// <summary>激活 UI：入栈 + 层级仲裁</summary>
-        private void Activate(IUIController ctrl)
+        private void Activate(UIController ctrl)
         {
             switch (ctrl.Layer)
             {
@@ -228,7 +206,7 @@ namespace UIFrameworkLib
         }
 
         /// <summary>开始退出流程</summary>
-        private async void StartExit(IUIController ctrl)
+        private async void StartExit(UIController ctrl)
         {
             try
             {
@@ -245,7 +223,7 @@ namespace UIFrameworkLib
         }
 
         /// <summary>退出后的栈管理 + 队列调度</summary>
-        private void OnExitCleanup(IUIController ctrl)
+        private void OnExitCleanup(UIController ctrl)
         {
             _stacks[ctrl.Layer].Pop();
 
@@ -310,7 +288,7 @@ namespace UIFrameworkLib
         // ================================================================
 
         /// <summary>获取最顶层 UI（优先级：Popup > Normal > Background）</summary>
-        private IUIController GetTopMostUI()
+        private UIController GetTopMostUI()
         {
             if (_stacks[UILayer.Popup].Count > 0)
                 return _stacks[UILayer.Popup].Peek();
@@ -322,13 +300,13 @@ namespace UIFrameworkLib
         }
 
         /// <summary>通过 Type 查找 Controller</summary>
-        private IUIController FindController(Type key)
+        private UIController FindController(Type key)
         {
             return UIControllerRegistry.GetController(key);
         }
 
         /// <summary>异常时清理</summary>
-        private void AbortOpen(IUIController ctrl)
+        private void AbortOpen(UIController ctrl)
         {
             ctrl.OnDispose();
             if (ctrl.View != null)

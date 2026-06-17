@@ -1,19 +1,17 @@
 using System;
 using Cysharp.Threading.Tasks;
-using Unity.VisualScripting;
 using UnityEngine;
 
 namespace UIFrameworkLib
 {
     /// <summary>
-    /// Controller 泛型基类
-    /// 一个 UI 对应一个 Controller，T 是对应的 UIView 类型。
+    /// Controller 非泛型基类
+    /// 提供通用状态管理和生命周期编排，供泛型版本继承
     /// </summary>
-    /// <typeparam name="T">对应的 UIView 类型</typeparam>
-    public abstract class UIController<T> : IUIController where T : UIView
+    public abstract class UIController : IUIController
     {
         // === 框架注入 ===
-        public T View { get; private set; }
+        public UIView View { get; protected set; }
         internal UIStateMachine StateMachine { get; } = new();
         internal bool PendingClose { get; set; } // Close 请求在加载/动画中途到达时标记
 
@@ -30,12 +28,7 @@ namespace UIFrameworkLib
         public abstract UILayer Layer { get; }
 
         // === IUIController 显式实现 ===
-        void IUIController.SetView(UIView view)
-        {
-            View = view as T;
-            if (View == null)
-                Debug.LogError($"[UIFrameworkLib] 类型不匹配: {typeof(T).Name} vs {view?.GetType().Name}");
-        }
+
 
         // === 生命周期编排 ===
         public virtual async UniTask<bool> EnterAsync()
@@ -93,12 +86,27 @@ namespace UIFrameworkLib
         }
 
 		// === 生命周期（业务层重写） ===
-		public virtual void OnInit() { }
-		public virtual void OnOpen(object args) { }
-		public virtual void OnHide() { }
-		public virtual void OnDispose() { }
+		public abstract void OnInit(UIView view);
+		public abstract void OnOpen(object args);
+		public abstract void OnHide();
+		public abstract void OnDispose();
+	}
 
-        // === 辅助 ===
-        protected void CloseSelf() => UIManager.Instance.CloseByType(typeof(This));
-    }
+    /// <summary>
+    /// Controller 泛型基类（继承非泛型 UIController）
+    /// 一个 UI 对应一个 Controller，T 是对应的 UIView 类型。
+    /// </summary>
+    /// <typeparam name="T">对应的 UIView 类型</typeparam>
+    public abstract class UIController<T> : UIController where T : UIView
+    {
+		public override void OnInit(UIView view)
+		{
+			View = view as T;
+			if (View == null)
+				Debug.LogError($"[UIFrameworkLib] 类型不匹配: {typeof(T).Name} vs {view?.GetType().Name}");
+		}
+
+		// === 辅助 ===
+		protected void CloseSelf() => UIManager.Instance.CloseByType(GetType());
+	}
 }
