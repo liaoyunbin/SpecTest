@@ -233,7 +233,6 @@ public class UIManager : Singleton<UIManager>
 
     // 调试用
     public int ActiveCount { get; }
-    public int CachedViewCount => _viewCache.Count;
 }
 ```
 
@@ -342,7 +341,6 @@ public class AssetMgr : Singleton<AssetMgr>
 public class UIManager : Singleton<UIManager>
 {
     // === 内部字段 ===
-    private Dictionary<Type, GameObject> _viewCache = new();
     private Dictionary<UILayer, Stack<IUIController>> _stacks = new()
     {
         [UILayer.Background] = new(),
@@ -449,28 +447,36 @@ public class UIManager : Singleton<UIManager>
     /// <returns>是否继续</returns>
     private async Task<bool> LoadView(IUIController ctrl)
     {
+        if (!await GetOrCreateView(ctrl)) { AbortOpen(ctrl); return false; }
+        if (!ctrl.IsLoading) { DestroyView(ctrl); return false; }
+        return true;
+    }
+
+    /// <summary>获取或创建 View，并完成初始化</summary>
+    private async UniTask<bool> GetOrCreateView(IUIController ctrl)
+    {
         Type key = ctrl.GetType();
         UIView view;
-
-        if (_viewCache.TryGetValue(key, out var cached) && cached != null)
+        
+        // Controller 已有 View → 直接激活
+        if (ctrl.View != null)
         {
-            cached.SetActive(true);
-            view = cached.GetComponent<UIView>();
+            ctrl.View.gameObject.SetActive(true);
+            view = ctrl.View;
         }
         else
         {
+            // 没有 View，加载新的
             var prefab = await AssetMgr.Instance.LoadPrefabAsync(ctrl.PrefabPath);
-            if (prefab == null) { AbortOpen(ctrl); return false; }
+            if (prefab == null) return false;
+            
             var instance = Object.Instantiate(prefab, UIRoot.Instance.GetLayer(ctrl.Layer));
             view = instance.GetComponent<UIView>();
+            ctrl.SetView(view);
+            (ctrl as UIController<...>).CloseAction = () => CloseByType(key);
+            ctrl.OnInit();
         }
-
-        if (!ctrl.IsLoading) { DestroyView(ctrl); return false; }
-
-        bool isFirstView = ctrl.View == null;
-        ctrl.SetView(view);
-        (ctrl as UIController<...>).CloseAction = () => CloseByType(key);
-        if (isFirstView) ctrl.OnInit();
+        
         return true;
     }
 
@@ -526,7 +532,6 @@ public class UIManager : Singleton<UIManager>
 
             ctrl.TryTransition(UIState.Closed);
             view.gameObject.SetActive(false);
-            _viewCache[key] = view.gameObject;
         }
         catch (Exception e)
         {
@@ -557,7 +562,6 @@ public class UIManager : Singleton<UIManager>
                 if (ctrl.View != null)
                 {
                     ctrl.View.gameObject.SetActive(false);
-                    _viewCache[ctrl.GetType()] = ctrl.View.gameObject;
                 }
             }
             stack.Clear();
@@ -652,11 +656,10 @@ public class UIManager : Singleton<UIManager>
         }
     }
 
-    /// <summary>加载完成但 PendingClose → 直接缓存，不弹出</summary>
+    /// <summary>加载完成但 PendingClose → 直接隐藏，不弹出</summary>
     private void AbortToCache(Type key, IUIController ctrl)
     {
         ctrl.View.gameObject.SetActive(false);
-        _viewCache[key] = ctrl.View.gameObject;
         ctrl.TryTransition(UIState.Closed);
     }
 
@@ -715,7 +718,7 @@ CloseAll:
 | `IsBusy` | 读 `_channelState` 复本 | 读 `_stacks[layer].Peek().IsLoading \|\| IsInAnimation` |
 | `StartOpening` finally | 重置 `_channelState` + `_channelController` | 无需清理 |
 | `CloseAll` | 分支判断 `ChannelState` + 遍历 `_visibleControllers` | 三个栈全遍历，统一销毁 + Clear |
-| 数据字段 | 7 个 | 3 个 (`_stacks` / `_viewCache` / `_queue`) |
+| 数据字段 | 7 个 | 2 个 (`_stacks` / `_queue`) |
 
 ---
 
