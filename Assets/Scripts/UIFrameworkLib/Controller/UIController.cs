@@ -77,16 +77,16 @@ namespace UIFrameworkLib
         /// </summary>
         public abstract UniTask<T> CreateViewAsync();
 
-        // ================================================================
-        // 框架工具方法
-        // ================================================================
+		// ================================================================
+		// 框架工具方法
+		// ================================================================
 
-        /// <summary>
-        /// 从 Resources 加载 Prefab 并实例化。
-        /// 自动检查是否有缓存的 View（隐藏的旧实例），有则直接复用。
-        /// </summary>
-        /// <param name="prefabPath">Resources 中的 Prefab 路径</param>
-        protected async UniTask<T> LoadFromResources(string prefabPath)
+		/// <summary>
+		/// 从 Resources 加载 Prefab 并实例化。
+		/// 自动检查是否有缓存的 View（隐藏的旧实例），有则直接复用。
+		/// </summary>
+		/// <param name="prefabPath">Resources 中的 Prefab 路径</param>
+		public async UniTask<T> LoadFromResources(string prefabPath)
         {
             var uiKey = Context.UIKey;
 
@@ -140,24 +140,24 @@ namespace UIFrameworkLib
             return view;
         }
 
-        // ================================================================
-        // 生命周期钩子（业务层重写）
-        // ================================================================
+		// ================================================================
+		// 生命周期钩子（业务层重写）
+		// ================================================================
 
-        /// <summary>仅一次：Controller 首次创建后调用。适合注册事件。</summary>
-        protected internal virtual void OnInit() { }
+		/// <summary>仅一次：Controller 首次创建后调用。适合注册事件。</summary>
+		public virtual void OnInit() { }
 
-        /// <summary>每次打开时调用，接收外部传入的参数。</summary>
-        protected internal virtual void OnOpen(object args) { }
+		/// <summary>每次打开时调用，接收外部传入的参数。</summary>
+		public virtual void OnOpen(object args) { }
 
-        /// <summary>入场动画结束后调用，此时 UI 已可见且可交互。</summary>
-        protected internal virtual void OnShown() { }
+		/// <summary>入场动画结束后调用，此时 UI 已可见且可交互。</summary>
+		public virtual void OnShown() { }
 
-        /// <summary>退场动画开始时调用。</summary>
-        protected internal virtual void OnHide() { }
+		/// <summary>退场动画开始时调用。</summary>
+		public virtual void OnHide() { }
 
-        /// <summary>销毁时调用，清理事件绑定、对象引用等。</summary>
-        protected internal virtual void OnDispose() { }
+		/// <summary>销毁时调用，清理事件绑定、对象引用等。</summary>
+		public virtual void OnDispose() { }
 
         // ================================================================
         // 辅助方法

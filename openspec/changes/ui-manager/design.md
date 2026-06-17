@@ -2,7 +2,7 @@
 
 ## 一、设计目标
 
-构建一个**数据驱动、VC 分离**的 UI 框架，满足商业级项目的稳定性、性能和可维护性要求。
+构建一个**数据驱动、VC 分离、高内聚低耦合**的 UI 框架，满足商业级项目的稳定性、性能和可维护性要求。
 
 ### 核心原则
 
@@ -10,37 +10,49 @@
 |------|------|
 | **VC 分离** | View 只做表现逻辑，Controller 只做业务逻辑 |
 | **1:1 约束** | 一个 Controller 对应且仅对应一个 View，由 UIController\<T\> 泛型保证 |
-| **Controller 自管理 View** | Controller 实现 CreateViewAsync()，通过框架工具方法加载/复用 View |
-| **接口简洁** | 对外只有 `Open<T>()` / `Close<T>()`，内部处理所有异步细节 |
-| **类型安全** | 通过泛型 Controller 类型推导 UIKey，无反射字符串匹配 |
+| **Manager 全权负责 View 生命周期** | 加载、缓存、实例化、挂载、销毁全部由 UIManager 掌控 |
+| **接口极简** | 对外 `Open<T>()` / `Close<T>()`；对内 Controller 仅注入一个 `CloseAction` 委托 |
+| **Type 即身份** | 框架内部以 `typeof(T)` 作为唯一标识，零字符串操作，零命名约定依赖 |
+| **Controller 无框架依赖** | Controller 是纯 C# 类，不依赖 UnityEngine 运行时，可独立单元测试 |
+
+### 职责边界（红线）
+
+| 层 | 可以做什么 | 不可以做什么 |
+|----|-----------|-------------|
+| **UIView** (MonoBehaviour) | 动画、交互控制、遮罩、组件绑定 | 访问 Controller/UIContext、调用业务 API |
+| **UIController\<T\>** (纯 C#) | 业务逻辑、事件订阅、数据刷新 | 创建/加载/销毁 View、访问框架单例、知道 Config 存在 |
+| **UIManager** | 生命周期编排、View 加载/缓存/实例化、队列调度 | 处理具体业务逻辑 |
 
 ---
 
 ## 二、架构概览
 
 ```
-┌─────────────────────────────────────────────┐
-│                  调用方                       │
-│    Open<ShopController>() / Close<T>()      │
-├─────────────────────────────────────────────┤
-│                 UIManager                    │
-│  ┌──────┐ ┌──────────┐ ┌──────┐ ┌────────┐ │
-│  │Queue │ │DualChannel│ │Stack │ │Cache   │ │
-│  └──────┘ └──────────┘ └──────┘ └────────┘ │
-├─────────────────────────────────────────────┤
-│   UIContext / UIStateMachine / UIItemConfig  │
-├──────────────┬──────────────────────────────┤
-│   UIView     │    UIController<T>           │
-│  (表现层)     │     (逻辑层)                  │
-│  - Animation │    - CreateViewAsync()       │
-│  - Interactive│   - OnInit / OnOpen         │
-│              │    - OnShown / OnHide        │
-│              │    - OnDispose               │
-├──────────────┴──────────────────────────────┤
-│   UIResourceLoader (只加载原始 Prefab)       │
-│   UIConfigLoader (外部配置 → UIItemConfig)   │
-│   Singleton<T> (泛型单例基类)                │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                    调用方                          │
+│        Open<ShopController>() / Close<T>()        │
+├──────────────────────────────────────────────────┤
+│                UIManager                           │
+│  ┌──────────────┐ ┌────────────────────────┐     │
+│  │UIViewCache   │ │ UIControllerRegistry    │     │
+│  │(隐藏View缓存) │ │ (工厂 + 持久化)         │     │
+│  └──────────────┘ └────────────────────────┘     │
+│  ┌──────────────────────────────────────────┐    │
+│  │  队列调度 · 三层级栈 · 双通道动画 · 编排    │    │
+│  └──────────────────────────────────────────┘    │
+├──────────────────────┬───────────────────────────┤
+│  UIView (表现层)       │  UIController<T> (逻辑层)   │
+│  - PlayEnterAnimation│  - OnInit(首次,View已就绪) │
+│  - PlayExitAnimation │  - OnOpen(动画后,每次)     │
+│  - SetInteractive    │  - OnHide / OnDispose     │
+│  - (无框架引用)       │  - CloseSelf()             │
+│                      │  - (仅持有 CloseAction)     │
+├──────────────────────┴───────────────────────────┤
+│  IAssetMgr  ·  IAnimationFactory  ·  UIConfigLoader              │
+│  UIContext (internal) · UIItemConfig (DTO)         │
+│                                                    │
+│  内部全部以 Type 做键，无 string 中转                │
+└──────────────────────────────────────────────────┘
 ```
 
 ---
@@ -58,9 +70,6 @@ public abstract class Singleton<T> where T : class, new()
 }
 ```
 
-- 线程安全的双检锁实现
-- UIManager 和 UIResourceLoader 均继承此基类
-
 ### 3.2 状态机 UIStateMachine
 
 **文件：** Core/UIStateMachine.cs
@@ -68,60 +77,64 @@ public abstract class Singleton<T> where T : class, new()
 ```
 None → Loading → AnimationEnter → Opened → AnimationExit → Closed
   ↓         ↓            ↓
-Closed   Closed        Closed      (中断/失败时的紧急回退)
+Closed   Closed        Closed      (中断/失败紧急回退)
 ```
 
-- 6 个明确状态（None / Loading / AnimationEnter / Opened / AnimationExit / Closed）
-- 所有转换走 `TryTransitionTo()`，非法转换自动拦截并日志警告
-- `IsTransitioning` 判断是否处于过渡状态
-- **替代 CancellationTokenSource：** 异步操作前后检查 `CurrentState`，若状态已被外部变更（如 CloseAll），则中断流程
+- 6 状态，`TryTransitionTo()` 校验合法性
+- `IsTransitioning` 判断过渡中
+- 异步操作前后检查状态替代 CancellationTokenSource
 
 ### 3.3 UIContext
 
-**文件：** Core/UIContext.cs
-
-每个 UI 实例的运行时状态容器，生命周期为：打开时创建 → 关闭时释放。
+**文件：** Core/UIContext.cs  
+**可见性：** `internal`
 
 ```csharp
-public class UIContext
+internal class UIContext
 {
-    public string UIKey { get; }           // UI 唯一标识
-    public int InstanceId { get; }         // 每次打开递增
-    public UIView View { get; private set; }
-    public IUIController Controller { get; private set; }
-    public UIItemConfig Config { get; }
-    public UIStateMachine StateMachine { get; }
-    public UIContext PreviousContext { get; set; }  // 栈中上一个 UI
+    public Type ControllerType { get; }        // typeof(ShopController)，框架内部唯一标识
+    public UIView View { get; set; }
+    public IUIController Controller { get; set; }
+    public UIItemConfig Config { get; }        // 加载后保留，供层级判断等
+    public UIStateMachine StateMachine { get; } = new();
+
+    public bool IsOpened      => StateMachine.CurrentState == UIState.Opened;
+    public bool IsLoading     => StateMachine.CurrentState == UIState.Loading;
+    public bool IsInAnimation => StateMachine.CurrentState == UIState.AnimationEnter
+                              || StateMachine.CurrentState == UIState.AnimationExit;
+    public bool IsClosed      => StateMachine.CurrentState == UIState.Closed;
+
+    public bool TryTransition(UIState target) => StateMachine.TryTransitionTo(target);
+    public void ForceClose();
+    public void Dispose();
 }
 ```
-
-关键方法：
-- `BindController(controller)` — View 创建前绑定 Controller
-- `SetView(view)` — Controller 创建 View 后设置 View
-- `Dispose()` — 完全清理
 
 ### 3.4 配置模型 UIItemConfig
 
 **文件：** Core/UIItemConfig.cs
 
+框架内部 DTO，不注入给 Controller。外部配置数据（JSON/Luban/SO）经此结构进入框架。
+
 ```csharp
 public class UIItemConfig
 {
-    public string UIKey { get; set; }       // UI 标识（与 Controller 类名对应）
-    public string PrefabPath { get; set; }  // Resources 路径
+    public string PrefabPath { get; set; }  // 资源路径（唯一数据源）
     public UILayer Layer { get; set; }      // Background / Normal / Popup
 }
 ```
 
-### 3.5 层级枚举 UILayer
+- `PrefabPath` 只在 UIManager 加载 View 时使用，Controller 不需要知道
+- `Layer` 只在 UIManager 层级路由时使用
+- 外部配置文件中可以保留 `uiKey` 字符串用于配置表的人类可读索引，但加载后以 `Type` 为键存储
 
-**文件：** Core/UILayer.cs
+### 3.5 层级枚举 UILayer
 
 | 层级 | 枚举值 | 行为 |
 |------|--------|------|
-| Background | 0 | 底层背景，同一时间只允许一个。打开时弹出（关闭）其上所有 Normal 和 Popup |
-| Normal | 1 | 标准界面，支持 Back 栈操作。打开新 Normal 时隐藏上一个（入栈），Back 时恢复 |
-| Popup | 2 | 弹窗界面，相互替换。新 Popup 替换当前 Popup，自带全屏遮罩 |
+| Background | 0 | 单例。打开时关闭其上所有 Normal 和 Popup |
+| Normal | 1 | 栈管理。打开时关闭所有 Popup，上一个 OnHide，Back 时恢复 |
+| Popup | 2 | 相互替换。新 Popup 关闭当前 Popup |
 
 ---
 
@@ -129,83 +142,59 @@ public class UIItemConfig
 
 **文件：** UIView/UIView.cs
 
-### 4.1 职责
+纯表现层。不持有 Controller 引用，不持有 Context 引用。动画能力通过组合 `IAnimationFactory` 获取，不在基类中实现。
 
-纯表现层，继承 MonoBehaviour。负责：
-- 动画播放（提供多种内置动画 Helper）
-- 交互控制（CanvasGroup 级别 + Selectable 快照）
-- Popup 遮罩（虚方法，子类可选实现）
+```csharp
+public abstract class UIView : MonoBehaviour
+{
+    // === 框架注入 ===
+    internal IAnimationFactory AnimationFactory { get; set; } = new DefaultAnimationFactory();
 
-### 4.2 生命周期方法
+    // === 子类重写 ===
+    public virtual void PlayEnterAnimation(Action onComplete)
+    {
+        AnimationFactory.GetStrategy(UIAnimationType.FadeEnter)
+            .Play((RectTransform)transform, 0.3f, onComplete);
+    }
+
+    public virtual void PlayExitAnimation(Action onComplete)
+    {
+        AnimationFactory.GetStrategy(UIAnimationType.FadeExit)
+            .Play((RectTransform)transform, 0.2f, onComplete);
+    }
+
+    // === 交互控制 ===
+    public void SetInteractive(bool enabled);
+    public bool IsInteractable { get; internal set; }
+}
+```
 
 | 方法 | 说明 |
 |------|------|
-| `PlayEnterAnimation(onComplete)` | 播放入场动画（virtual，默认淡入 0.3s） |
-| `PlayExitAnimation(onComplete)` | 播放退场动画（virtual，默认淡出 0.2s） |
-| `ShowMask()` / `HideMask()` | 遮罩控制（virtual，Popup 子类实现） |
+| `PlayEnterAnimation(onComplete)` | 入场动画（virtual，默认淡入 0.3s） |
+| `PlayExitAnimation(onComplete)` | 退场动画（virtual，默认淡出 0.2s） |
+| `SetInteractive(bool)` | CanvasGroup 级别 interactable + blocksRaycasts |
+| `IsInteractable` (bool 属性) | 框架设置的交互许可标记，业务层在按钮回调中自行判断 |
 
-### 4.3 交互控制
-
-- `SetInteractive(bool)` — CanvasGroup 级别的 interactable + blocksRaycasts
-- `DisableAllSelectables()` — 快照所有 Selectable 并禁用（入场动画前）
-- `RestoreSelectables()` — 恢复快照（入场动画结束）
-
-### 4.4 内置动画 Helper
-
-子类可在 override `PlayEnterAnimation` / `PlayExitAnimation` 中直接调用：
-
-| Helper 方法 | 效果 |
-|------------|------|
-| `FadeEnter` / `FadeExit` | 透明度淡入淡出（默认） |
-| `ScaleEnter` / `ScaleExit` | 缩放弹性效果（弹入到 1.1 再回到 1.0） |
-| `SlideUpEnter` / `SlideUpExit` | 从下往上滑入 / 往上滑出 |
-| `SlideDownEnter` / `SlideDownExit` | 从上往下滑入 / 往下滑出 |
-| `BlackFadeEnter` / `BlackFadeExit` | 黑屏渐入渐出（需传入全屏黑色 Image） |
-
-示例：
-```csharp
-public class ShopView : UIView
-{
-    public Button m_BtnClose;
-
-    private void Awake()
-    {
-        m_BtnClose = transform.Find("BtnClose").GetComponent<Button>();
-    }
-
-    public override void PlayEnterAnimation(Action onComplete)
-    {
-        ScaleEnter(onComplete, 0.35f);  // 缩放弹入
-    }
-
-    public override void PlayExitAnimation(Action onComplete)
-    {
-        FadeExit(onComplete, 0.15f);   // 淡出
-    }
-}
-```
+子类 override `PlayEnterAnimation` / `PlayExitAnimation` 时，通过 `AnimationFactory.GetStrategy(UIAnimationType.xxx).Play(...)` 选择动画效果。动画策略枚举参见第十一节。
 
 ---
 
 ## 五、Controller 体系
 
-### 5.1 IUIController（内部接口）
+### 5.1 IUIController（公共接口）
 
 **文件：** Controller/IUIController.cs
 
-框架内部使用的多态接口，业务层不需要也不应该直接接触。
-
 ```csharp
-internal interface IUIController
+public interface IUIController
 {
-    UIContext Context { get; }
-    void BindContext(UIContext context);
     void SetView(UIView view);
-    void OnInit();
-    void OnOpen(object args);
-    void OnShown();
-    void OnHide();
-    void OnDispose();
+
+    void OnInit();      // 首次：SetView 之后。View 已就绪
+    void OnOpen();      // 每次打开：动画结束后。UI 可见可交互
+    void OnHide();      // 退场前
+    void OnDispose();   // 清理
 }
 ```
 
@@ -216,202 +205,162 @@ internal interface IUIController
 ```csharp
 public abstract class UIController<T> : IUIController where T : UIView
 {
+    // === 框架注入 ===
     public T View { get; private set; }
-    public UIContext Context { get; private set; }
-    public UIItemConfig Config => Context?.Config;
+    internal Action CloseAction { get; set; }  // 唯一注入
 
-    // 子类必须实现 — 创建或获取 View
-    public abstract UniTask<T> CreateViewAsync();
+    // === IUIController 显式实现 ===
+    void IUIController.SetView(UIView view)
+    {
+        View = view as T;
+        if (View == null)
+            Debug.LogError($"[UIFrameworkLib] 类型不匹配: {typeof(T).Name} vs {view?.GetType().Name}");
+    }
 
-    // 框架提供的工具方法
-    protected UniTask<T> LoadFromResources(string prefabPath);
-    protected T LoadFromCache();
+    // === 生命周期（业务层重写） ===
+    protected internal virtual void OnInit() { }
+    protected internal virtual void OnOpen() { }
+    protected internal virtual void OnHide() { }
+    protected internal virtual void OnDispose() { }
 
-    // 生命周期钩子
-    protected internal virtual void OnInit();
-    protected internal virtual void OnOpen(object args);
-    protected internal virtual void OnShown();
-    protected internal virtual void OnHide();
-    protected internal virtual void OnDispose();
-
-    // 辅助方法
-    protected void CloseSelf();
+    // === 辅助 ===
+    protected void CloseSelf() => CloseAction?.Invoke();
 }
 ```
 
-**折中方案说明：**
-Controller 自管理 View 创建（实现 CreateViewAsync），框架提供 LoadFromResources 等工具方法：
-1. 先检查 UIManager 是否有缓存的隐藏实例（上次关闭时缓存）
-2. 无缓存时通过 UIResourceLoader 加载 Prefab 并实例化
-3. 实例化后挂载到 UIRoot 对应层级
-
 **使用示例：**
+
 ```csharp
 public class ShopController : UIController<ShopView>
 {
-    public override async UniTask<ShopView> CreateViewAsync()
-    {
-        return await LoadFromResources("Prefabs/ShopPanel");
-    }
-
     protected internal override void OnInit()
     {
         View.m_BtnClose.onClick.AddListener(CloseSelf);
     }
 
-    protected internal override void OnOpen(object args)
+    protected internal override void OnOpen()
     {
-        var categoryId = (int)args;
-        // 刷新数据...
+        // UI 已可见，刷新数据
+        RefreshShopData();
     }
 }
 ```
 
 ---
 
-## 六、UIManager 核心管理器
+## 六、UIManager
 
 **文件：** Manager/UIManager.cs
 
 ### 6.1 对外接口
 
 ```csharp
-// 通过 Controller 类型打开/关闭 UI
-UIManager.Instance.Open<ShopController>(args);
-UIManager.Instance.Close<ShopController>();
-
-// 通过字符串 UIKey（调试工具用）
-UIManager.Instance.Open("Shop", args);
-UIManager.Instance.Close("Shop");
-
-// 紧急关闭全部
-UIManager.Instance.CloseAll();
-
-// 清空缓存 View
-UIManager.Instance.ClearCache();
-```
-
-### 6.2 Controller 持久化
-
-```csharp
-private readonly Dictionary<string, IUIController> _controllers = new();
-```
-
-- Controller 首次创建后持久化保存，不会销毁
-- 首次创建时调用 `OnInit()`，后续只调用 `OnOpen()` / `OnShown()` / `OnHide()`
-- `_initializedControllers` HashSet 跟踪已初始化过的 Controller
-
-### 6.3 View 隐藏缓存
-
-**替代 UIPool：** 关闭 UI 时不销毁 View，而是 `SetActive(false)` 缓存到 `CachedViews` 字典。
-
-```csharp
-public readonly Dictionary<string, GameObject> CachedViews = new();
-```
-
-- 下次打开同一 UI 时，Controller 的 `LoadFromResources()` 先检查缓存
-- `ClearCache()` 手动清空所有缓存实例
-- 对比对象池：更简单，无容量限制，无池管理开销
-
-### 6.4 请求队列
-
-```
-Open<T>() 执行逻辑：
-  同一界面已打开（Opened 状态） → 直接刷新 Controller.OnOpen(args)
-  同一界面已在队列中            → 刷新参数（去重）
-  有任务在执行或双通道忙        → 入队等待（上限 10）
-  无任务                        → 立即执行
-```
-
-`QueueItem` 内部类：
-```csharp
-private class QueueItem
+public class UIManager : Singleton<UIManager>
 {
-    public string UIKey { get; }
-    public object Args { get; set; }
+    public void Open<T>(object args = null) where T : IUIController;
+    public void Close<T>() where T : IUIController;
+    public void CloseAll();
+    public void ClearCache();
+
+    // 注入：替换全局动画工厂（默认 DefaultAnimationFactory）
+    public void SetAnimationFactory(IAnimationFactory factory);
+
+    // 调试用
+    public int ActiveCount { get; }
+    public int CachedViewCount => _viewCache.Count;
+    public UIConfigLoader ConfigLoader { get; } = new();
 }
 ```
 
-### 6.5 双通道动画
+- `typeof(T)` 即为 Controller 唯一标识，无 string 重载
 
-维护两个独立通道实现退场与进场动画重叠：
+### 6.2 子模块：UIViewCache
 
-```csharp
-private UIContext _exitingContext;  // 退场通道
-private UIContext _enteringContext; // 进场通道
-private bool IsBusy => _exitingContext != null || _enteringContext != null;
-```
-
-### 6.6 UIKey 解析
+**文件：** Manager/UIViewCache.cs
 
 ```csharp
-private string ResolveUIKey<T>() where T : IUIController
+internal class UIViewCache
 {
-    var name = typeof(T).Name;
-    return name.EndsWith("Controller")
-        ? name[..^"Controller".Length]
-        : name;
+    public GameObject Get(Type controllerType);
+    public void Store(Type controllerType, GameObject go);
+    public void Clear();
+    public int Count { get; }
 }
 ```
 
-### 6.7 栈管理
+### 6.3 子模块：UIControllerRegistry
+
+**文件：** Manager/UIControllerRegistry.cs
 
 ```csharp
-private readonly List<UIContext> _normalStack = new();
+internal class UIControllerRegistry
+{
+    // 手动注册（可选）
+    public void Register(Type controllerType);
+
+    // 获取或创建。返回 (controller, isFirstTime)
+    public (IUIController controller, bool isFirstTime) GetOrCreate(Type controllerType);
+
+    // 自动扫描：启动时遍历所有 IUIController 实现，注册自身 Type
+    public void AutoRegister();
+
+    // 通过 Config 中的 uiKey 字符串查找 Type（仅外部配置加载时用一次）
+    public Type FindType(string configUIKey);
+
+    public void Clear();
+}
 ```
 
-| 层级 | 管理方式 |
-|------|---------|
+- `AutoRegister()` 扫描 `AppDomain.CurrentDomain.GetAssemblies()` 中所有 `IUIController` 实现，`controllerType` 即键。
+- 外部配置加载时：`FindType("Shop")` → `typeof(ShopController)`，之后全部走 Type。这是 string 在框架内的唯一入口。
+
+### 6.4 队列调度
+
+```
+Open<T>(args)：
+  同一界面已 Opened → 直接 OnOpen()
+  已有排队项 → 替换（队列深度 = 1）
+  空闲 → 立即执行
+```
+
+### 6.5 层级与栈管理
+
+| 层级 | 规则 |
+|------|------|
 | Background | 单例，打开时关闭所有 Normal 和 Popup |
-| Normal | 入栈，上一个自动 OnHide，Back 时恢复 OnShown |
-| Popup | 相互替换，记录栈顶 Normal 为 PreviousContext |
-
-**RegisterContext 逻辑：**
-- Background：关闭所有 Normal 和 Popup，替换当前 Background
-- Normal：上一个 Normal OnHide → 入栈
-- Popup：当前 Popup StartExit → 替换
-
-**UnregisterContext 逻辑：**
-- 从 `_activeContexts` 移除
-- 从对应层级引用移除
-- 尝试恢复上一个 Normal（RestorePreviousNormal）
-
-### 6.8 状态机替代 CancellationToken
-
-在异步操作的关键节点检查状态机状态，而非使用 CancellationToken：
-
-```csharp
-// Controller 创建 View
-var view = await controller.CreateViewAsync();
-// 检查：如果在加载期间被 CloseAll 中断，状态已经不是 Loading
-if (ctx.StateMachine.CurrentState != UIState.Loading)
-{
-    if (view != null) Object.Destroy(view.gameObject);
-    CleanupAndNext(ctx);
-    return;
-}
-```
+| Normal | 入栈，打开时关闭所有 Popup，上一个 OnHide |
+| Popup | 相互替换 |
 
 ---
 
-## 七、UIResourceLoader 资源管理器
+## 七、IAssetMgr 资源加载
 
-**文件：** Manager/UIResourceLoader.cs
+**文件：** Core/IAssetMgr.cs
 
 ```csharp
-public class UIResourceLoader : Singleton<UIResourceLoader>
+public interface IAssetMgr
 {
-    public async UniTask<GameObject> LoadPrefabAsync(string prefabPath);
+    UniTask<GameObject> LoadPrefabAsync(string prefabPath);
 }
 ```
 
-- 继承 Singleton\<T\>，通过 `Instance` 访问
-- 职责单一：仅从 Resources 异步加载 Prefab，返回原始 GameObject
-- 不负责实例化、不负责缓存、不负责对象池
-- 提供超时看门狗（仅日志警告，不中断流程）
-- 可通过继承重写 `LoadPrefabAsync` 切换到 Addressables / AssetBundle
+默认实现：
 
----
+**文件：** Manager/AssetMgr.cs
+
+```csharp
+public class AssetMgr : IAssetMgr
+{
+    public async UniTask<GameObject> LoadPrefabAsync(string prefabPath)
+    {
+        var req = Resources.LoadAsync<GameObject>(prefabPath);
+        await req.ToUniTask();
+        return req.asset as GameObject;
+    }
+}
+```
+
+切换 Addressables / AssetBundle 只需新建实现类替换注入。
 
 ## 八、UIConfigLoader 配置加载器
 
@@ -420,24 +369,21 @@ public class UIResourceLoader : Singleton<UIResourceLoader>
 ```csharp
 public class UIConfigLoader
 {
-    public void Load(List<UIItemConfig> configs);
-    public UIItemConfig Get(string uiKey);
-    public string[] GetAllKeys();
-    public void Reload(List<UIItemConfig> configs);
+    public void Load(List<(string uiKey, UIItemConfig config)> rawConfigs);
+    // 内部：通过 Registry.FindType(uiKey) 将 string 转为 Type，以 Dictionary<Type, UIItemConfig> 存储
+
+    public UIItemConfig Get(Type controllerType);
+    public void Reload(...);
 }
 ```
 
-- 与具体数据格式解耦（Luban / ScriptableObject / JSON 均可）
-- 外部自行将原始数据转换为 `List<UIItemConfig>` 后调用 Load
-- 支持运行时热重载
+- 外部数据源提供的 `uiKey` 字符串仅在 `Load()` 时转换一次，框架内部不再流通 string。
 
 ---
 
 ## 九、UIRoot
 
 **文件：** UIView/UIRoot.cs
-
-层级结构（由低到高）：
 
 ```
 [UIRoot] (Canvas, SortingOrder=10000)
@@ -446,73 +392,65 @@ public class UIConfigLoader
 └── PopupLayer       (SortingOrder=200)
 ```
 
-- `[RuntimeInitializeOnLoadMethod]` 场景加载前自动初始化
-- `DontDestroyOnLoad` 跨场景持久化
-- `GetLayer(UILayer)` 根据层级获取对应 Transform
-
 ---
 
 ## 十、生命周期流程
 
-### 10.1 打开流程 (ExecuteOpen)
+### 10.1 打开流程
 
 ```
-EnqueueOpen(uiKey, args)
-  ├─ 已打开（Opened）→ 直接刷新 OnOpen
-  ├─ 已在队列 → 刷新 args
-  ├─ 队列忙 → 入队
-  └─ 空闲 → 执行
+Open<T>(args)
+  → Type key = typeof(T)
+  → 队列调度
+  → ExecuteOpen(key, args)
 
-ExecuteOpen(item)
-  1. 创建 UIContext, 状态 → Loading
-  2. 获取/创建 Controller（持久化）
-     - 首次 → _controllers[uiKey] = controller
-     - 首次 → OnInit()
-  3. Controller.CreateViewAsync()
-     - 检查缓存 → 复用
-     - 异步加载 Prefab → 实例化
-  4. 状态检查（是否仍为 Loading？）
-  5. 注册到层级管理 (RegisterContext)
-  6. 状态 → AnimationEnter
-  7. 禁用交互 + 遮罩(Popup)
-  8. OnOpen(args)
-  9. PlayEnterAnimation → 等待完成
-  10. 状态 → Opened
-  11. 恢复交互
-  12. OnShown()
-  13. _enteringContext = null
-  14. ProcessNext()
+ExecuteOpen:
+  1. Config = ConfigLoader.Get(key)  → PrefabPath, Layer
+  2. 创建 Context(key, config), 状态 → Loading
+  3. _registry.GetOrCreate(key) → (controller, isFirstTime)
+  4. View 加载：
+     a. _viewCache.Get(key) → 有缓存 SetActive(true)
+     b. 无缓存 → IAssetMgr.LoadPrefabAsync(PrefabPath)
+     → Instantiate(prefab, UIRoot.GetLayer(Layer))
+  5. 状态检查（仍 Loading？）
+  6. controller.SetView(view)
+  7. 注入 CloseAction 到 controller
+  8. if (isFirstTime) controller.OnInit()  ← View 已就绪
+  9. 层级注册 → 状态 AnimationEnter
+  10. view.IsInteractable = false          ← 框架设置标记
+  11. view.SetInteractive(false)           ← CanvasGroup 关闭射线
+  12. view.PlayEnterAnimation() → await
+  13. 状态 → Opened
+  14. view.SetInteractive(true)
+  15. view.IsInteractable = true           ← 框架恢复标记
+  16. controller.OnOpen()
+  17. ProcessNext()
 ```
 
-### 10.2 关闭流程 (StartExit)
+### 10.2 关闭流程
 
 ```
-StartExit(ctx)
-  1. 状态检查（必须是 Opened）
-  2. 状态 → AnimationExit
-  3. OnHide()
-  4. 禁用交互
-  5. PlayExitAnimation → 等待完成
-  6. 状态 → Closed
-  7. CacheView (SetActive(false)，不销毁)
-  8. UnregisterContext
-     - 从 _activeContexts 移除
-     - 从对应层级引用移除
-  9. RestorePreviousNormal (如有)
-  10. _exitingContext = null
-  11. ProcessNext()
+StartExit(ctx):
+  1. ctx.IsOpened 检查
+  2. ctx.TryTransition(AnimationExit)
+  3. view.IsInteractable = false
+  4. controller.OnHide()
+  5. view.SetInteractive(false)
+  6. view.PlayExitAnimation() → await
+  7. ctx.TryTransition(Closed)
+  8. _viewCache.Store(ctx.ControllerType, view.gameObject)
+  9. 栈出栈 + RestorePreviousNormal
+  10. ProcessNext()
 ```
 
-### 10.3 关闭全部 (CloseAll)
+### 10.3 关闭全部
 
 ```
-CloseAll()
-  1. 清空队列，重置 _isProcessing
-  2. 清理 _enteringContext / _exitingContext
-  3. 遍历所有活跃 Context → Closed + OnDispose + Destroy View
-  4. 清空 _activeContexts / _normalStack / 层级引用
-  5. 清理所有缓存 View
-  6. 清理所有持久 Controller
+CloseAll():
+  1. 清空队列
+  2. 遍历活跃 Context → ForceClose + OnDispose + Destroy View
+  3. _viewCache.Clear()
+  4. _registry.Clear()
 ```
 
 ---
@@ -521,21 +459,115 @@ CloseAll()
 
 ### 11.1 设计原则
 
-- UIView 提供 `virtual` 方法，子类 override 选择效果
-- 所有动画通过 `UniTask` + `Time.deltaTime` 驱动
-- 动画完成通过回调通知框架
-- 子类在 override 中直接调用内置 Helper
+- UIView 不再内置动画实现，通过组合 `IAnimationFactory` 获取策略
+- 每个动画效果一个独立策略类，实现 `IAnimationStrategy` 接口
+- `IAnimationFactory` 根据 `UIAnimationType` 枚举返回对应策略实例
+- 默认实现 `DefaultAnimationFactory` 使用 `UniTask` + `Time.deltaTime` 驱动
+- 替换方式：实现新的工厂类（如 DOTween 动画工厂），注入到 UIView.AnimationFactory
 
-### 11.2 动画类型
+### 11.2 策略接口
 
-| 类型 | UIAnimationType 枚举 | Helper 方法 |
-|------|---------------------|------------|
-| 淡入淡出 | Fade | FadeEnter / FadeExit |
-| 缩放弹性 | Scale | ScaleEnter / ScaleExit |
-| 上滑入/出 | SlideUp | SlideUpEnter / SlideUpExit |
-| 下滑入/出 | SlideDown | SlideDownEnter / SlideDownExit |
-| 黑屏渐入 | BlackFade | BlackFadeEnter / BlackFadeExit |
-| 无动画 | None | 立即回调 onComplete |
+**文件：** Animation/IAnimationStrategy.cs
+
+```csharp
+public interface IAnimationStrategy
+{
+    void Play(RectTransform target, float duration, Action onComplete);
+}
+```
+
+### 11.3 动画策略类
+
+**目录：** `Animation/Strategies/`
+
+| 类 | 对应枚举 | 效果 |
+|----|---------|------|
+| `FadeEnterStrategy` | `FadeEnter` | 透明度 0→1 |
+| `FadeExitStrategy` | `FadeExit` | 透明度 1→0 |
+| `ScaleEnterStrategy` | `ScaleEnter` | 缩放 0→1.1→1（弹性） |
+| `ScaleExitStrategy` | `ScaleExit` | 缩放 1→0 |
+| `SlideUpEnterStrategy` | `SlideUpEnter` | 从下往上滑入 |
+| `SlideUpExitStrategy` | `SlideUpExit` | 往上滑出 |
+| `SlideDownEnterStrategy` | `SlideDownEnter` | 从上往下滑入 |
+| `SlideDownExitStrategy` | `SlideDownExit` | 往下滑出 |
+| `BlackFadeEnterStrategy` | `BlackFadeEnter` | 黑屏渐入 |
+| `BlackFadeExitStrategy` | `BlackFadeExit` | 黑屏渐出 |
+| `NoneStrategy` | `None` | 立即回调 |
+
+### 11.4 工厂接口
+
+**文件：** Animation/IAnimationFactory.cs
+
+```csharp
+public interface IAnimationFactory
+{
+    IAnimationStrategy GetStrategy(UIAnimationType type);
+}
+```
+
+### 11.5 默认工厂
+
+**文件：** Animation/DefaultAnimationFactory.cs
+
+```csharp
+public class DefaultAnimationFactory : IAnimationFactory
+{
+    private readonly Dictionary<UIAnimationType, IAnimationStrategy> _strategies = new()
+    {
+        [UIAnimationType.FadeEnter]  = new FadeEnterStrategy(),
+        [UIAnimationType.FadeExit]   = new FadeExitStrategy(),
+        [UIAnimationType.ScaleEnter] = new ScaleEnterStrategy(),
+        // ...
+    };
+
+    public IAnimationStrategy GetStrategy(UIAnimationType type)
+        => _strategies.TryGetValue(type, out var s) ? s : _strategies[UIAnimationType.None];
+}
+```
+
+### 11.6 动画类型枚举
+
+```csharp
+public enum UIAnimationType
+{
+    FadeEnter,   FadeExit,
+    ScaleEnter,  ScaleExit,
+    SlideUpEnter,  SlideUpExit,
+    SlideDownEnter, SlideDownExit,
+    BlackFadeEnter, BlackFadeExit,
+    None,
+}
+```
+
+### 11.7 UIView 使用方式
+
+```csharp
+public class ShopView : UIView
+{
+    public override void PlayEnterAnimation(Action onComplete)
+    {
+        AnimationFactory.GetStrategy(UIAnimationType.ScaleEnter)
+            .Play((RectTransform)transform, 0.35f, onComplete);
+    }
+}
+```
+
+业务方替换为 DOTween 动画：
+
+```csharp
+public class DOTweenAnimationFactory : IAnimationFactory
+{
+    public IAnimationStrategy GetStrategy(UIAnimationType type) => type switch
+    {
+        UIAnimationType.FadeEnter  => new DOTweenFadeEnter(),
+        UIAnimationType.ScaleEnter => new DOTweenScaleEnter(),
+        // ...
+    };
+}
+
+// 注入
+UIManager.Instance.SetAnimationFactory(new DOTweenAnimationFactory());
+```
 
 ---
 
@@ -543,11 +575,7 @@ CloseAll()
 
 **文件：** Editor/UIEditorWindow.cs
 
-- 菜单 `UIFrameworkLib/UI Debugger`
-- 显示：活跃 UI 列表 + 状态 + 层级 + 打开时间
-- 显示：Normal 栈
-- 显示：缓存 View 统计
-- 操作：CloseAll / ClearCache / 手动 Open
+菜单 `UIFrameworkLib/UI Debugger`：活跃 UI 列表（显示 `ControllerType.Name`）、Normal 栈、缓存统计、CloseAll / ClearCache。
 
 ---
 
@@ -556,38 +584,72 @@ CloseAll()
 ```
 Assets/Scripts/UIFrameworkLib/
 ├── Core/
-│   ├── Singleton.cs              # 泛型单例基类
-│   ├── UILayer.cs                # 层级枚举（Background/Normal/Popup）
-│   ├── UIStateMachine.cs         # 6 状态状态机
-│   ├── UIItemConfig.cs           # 配置模型
-│   └── UIContext.cs              # 运行时上下文
+│   ├── Singleton.cs
+│   ├── UILayer.cs
+│   ├── UIStateMachine.cs
+│   ├── UIItemConfig.cs
+│   ├── UIContext.cs              (internal)
+│   └── IAssetMgr.cs
+├── Animation/
+│   ├── UIAnimationType.cs
+│   ├── IAnimationStrategy.cs
+│   ├── IAnimationFactory.cs
+│   ├── DefaultAnimationFactory.cs
+│   └── Strategies/
+│       ├── FadeEnterStrategy.cs
+│       ├── FadeExitStrategy.cs
+│       ├── ScaleEnterStrategy.cs
+│       ├── ScaleExitStrategy.cs
+│       ├── SlideUpEnterStrategy.cs
+│       ├── SlideUpExitStrategy.cs
+│       ├── SlideDownEnterStrategy.cs
+│       ├── SlideDownExitStrategy.cs
+│       ├── BlackFadeEnterStrategy.cs
+│       ├── BlackFadeExitStrategy.cs
+│       └── NoneStrategy.cs
 ├── UIView/
-│   ├── UIView.cs                 # View 基类（动画 + 交互 + 遮罩）
-│   └── UIRoot.cs                 # 场景根节点（3 层结构）
+│   ├── UIView.cs
+│   └── UIRoot.cs
 ├── Controller/
-│   ├── IUIController.cs          # 内部接口
-│   └── UIController.cs           # 泛型基类（Controller 自管理 View）
+│   ├── IUIController.cs
+│   └── UIController.cs
 ├── Manager/
-│   ├── UIManager.cs              # 核心管理器（队列/双通道/栈/缓存）
-│   └── UIResourceLoader.cs       # 资源加载器（只加载原始 Prefab）
+│   ├── UIManager.cs
+│   ├── UIViewCache.cs
+│   ├── UIControllerRegistry.cs
+│   └── AssetMgr.cs
 ├── Config/
-│   └── UIConfigLoader.cs         # 配置加载器
+│   └── UIConfigLoader.cs
 └── Editor/
-    └── UIEditorWindow.cs         # 运行时调试窗口
+    └── UIEditorWindow.cs
 ```
+
+
 
 ---
 
-## 十四、变更记录
+## 十四、v12 vs v11 变更对比
+
+| v11 | v12 | 原因 |
+|-----|-----|------|
+| `UIKeyResolver` 解析 Type→string | 删除。内部直接用 `typeof(T)` | 框架内部没有必须用 string 的场景 |
+| `Dictionary<string, ...>` 做字典键 | `Dictionary<Type, ...>` | 类型安全，零开销，无命名约定绑定 |
+| Controller 注入 `Config` | 删除。只注入 `CloseAction` | Controller 不需要 PrefabPath/Layer/UIKey |
+| `UIContext.UIKey` (string) | `UIContext.ControllerType` (Type) | 与字典键一致 |
+| `Open(string)` / `Close(string)` 重载 | 删除 | 无使用场景 |
+| `UIConfigLoader.Get(string)` | `Get(Type)` | 仅 Load 时做一次 string→Type 转换 |
+| `UIItemConfig.UIKey` | 从框架内删除 | Load 后不需要，外部配置可保留但不流入框架 |
+
+---
+
+## 十五、变更记录
 
 | 版本 | 变更内容 |
 |------|---------|
-| v1 | 初始版本：Luban 配置 + UIPool + UIRegistry + UIKeyAttribute + 自动绑定 |
-| v2 | 去除 Luban 依赖、去除 IsSingleton/CacheOnClose/IsModal 字段、去除 UIKeyAttribute |
-| v3 | 资源加载抽离到 UIResourceLoader |
-| v4 | UILayer 精简为三层（Background/Normal/Popup），修改栈语义 |
-| v5 | 简化动画策略，去除 UIMark，改为手动绑定 |
-| v6 | 迁移到 UniTask，简化队列逻辑，Controller 持久化 |
-| v7 | 添加 Singleton<T> 泛型单例基类 |
-| v8 | 折中方案：Controller 自管理 View 创建，框架提供工具方法 |
-| v9 | 去除 UIPool → 隐藏 View 缓存，UIResourceLoader 只返回 GameObject，状态机替代 CancellationToken |
+| v1~v9 | （略） |
+| v10 | 高内聚低耦合重构：UIContext 降 internal；移除 Controller View 创建能力；IUIController 去 Context；UIView 去 Controller 引用；UIManager 拆 4 子模块；接口化 |
+| v11 | 精简过度设计：修 OnInit 时序 bug；IViewServiceProvider 改委托；合并 OnOpen/OnShown；去 IUIControllerFactory/特性/2 子模块；队列深度降 1；事件改直接调用 |
+| v12 | **删除 UIKeyResolver，Type 即身份：** 框架内部全部以 `typeof(T)` 为标识；Controller 不再注入 Config，仅保留 CloseAction；去除所有 string 字典键，改为 Type 键 |
+| v13 | **UIView 交互控制简化：** 删除 `DisableAllSelectables()` / `RestoreSelectables()`（快照+禁用所有按钮），改为 `IsInteractable` bool 属性 + `SetInteractive(bool)` CanvasGroup 控制；业务层在按钮回调中自行根据 `IsInteractable` 判断是否响应 |
+| v14 | **删除 ShowMask/HideMask：** 遮罩是 Popup Prefab 内部视觉元素，由子类在 `PlayEnterAnimation/PlayExitAnimation` 中自行处理 |
+| v15 | **IAssetMgr 重命名 + 动画策略类抽取：** `IUIResourceLoader` → `IAssetMgr`，`UIResourceLoader` → `AssetMgr`；动画能力从 UIView 内置 Helper 抽为独立策略类（`IAnimationStrategy`）+ 工厂（`IAnimationFactory`），UIView 改为组合获取 |

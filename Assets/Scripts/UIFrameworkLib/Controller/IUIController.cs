@@ -1,19 +1,18 @@
 using System;
+using Cysharp.Threading.Tasks;
 
 namespace UIFrameworkLib
 {
     /// <summary>
-    /// Controller 内部接口
+    /// Controller 公共接口
     /// 用于框架内部多态操作（避免泛型协变问题）
-    /// 业务层不直接使用此接口
     /// </summary>
-    internal interface IUIController
+    public interface IUIController
     {
         /// <summary>运行上下文</summary>
         UIContext Context { get; }
-
-        /// <summary>绑定上下文（框架内部调用）</summary>
-        void BindContext(UIContext context);
+		/// <summary>绑定上下文（框架内部调用）</summary>
+		void BindContext(UIContext context);
 
         /// <summary>设置 View（Controller 创建 View 后调用）</summary>
         void SetView(UIView view);

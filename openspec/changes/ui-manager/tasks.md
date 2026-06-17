@@ -39,7 +39,7 @@
 
 ### 2.1 IUIController
 - [x] 创建 `Controller/IUIController.cs`
-- [x] 定义为 internal 内部接口
+- [x] 定义为 public 公共接口
 - [x] 定义：BindContext / SetView / OnInit / OnOpen / OnShown / OnHide / OnDispose
 
 ### 2.2 UIController<T>
@@ -121,16 +121,102 @@
 
 ---
 
-## 阶段 5：文档
+## 阶段 5：v12 — Type 即身份 + Controller 零注入
 
-### 5.1 设计文档
-- [x] 更新 `openspec/changes/ui-manager/design.md`
-- [x] 覆盖所有核心模块、架构分层、生命周期流程
-- [x] 记录从 v1 到 v9 的变更历史
+### 5.1 删除 UIKeyResolver
+- [ ] 删除 `Core/UIKeyResolver.cs`
+- [ ] 框架内部全部 `Dictionary<Type, ...>` 替代 `Dictionary<string, ...>`
+- [ ] `UIContext.UIKey` (string) → `UIContext.ControllerType` (Type)
 
-### 5.2 伪代码
-- [x] 更新 `openspec/changes/ui-manager/pseudo-code.cs`
-- [x] 覆盖所有模块的伪代码实现
-- [x] 包含业务层使用示例
-- [x] 包含生命周期流程图
-- [x] 明确标注「状态机替代 CancellationToken」「UIPool 替代为隐藏缓存」等关键设计决策
+### 5.2 UIContext 精简 + 降级
+- [ ] `UIContext` 可见性从 `public` 改为 `internal`
+- [ ] 删除 `InstanceId` / `PreviousContext` / `BindController()` / `SetView()`
+- [ ] 新增语义方法：`IsOpened` / `IsLoading` / `IsInAnimation` / `IsClosed` / `TryTransition()` / `ForceClose()`
+- [ ] Manager 中所有 `ctx.StateMachine.CurrentState ==` 改为 `ctx.IsOpened` 等
+
+### 5.3 IUIResourceLoader 接口
+- [ ] 创建 `Core/IUIResourceLoader.cs`（`LoadPrefabAsync`）
+
+### 5.4 IUIController 精简
+- [ ] 删除 `UIContext Context` 和 `BindContext()`
+- [ ] 删除 `OnShown()`（合并到 `OnOpen`，动画后调用）
+- [ ] `OnOpen` 不再带 args 参数
+
+### 5.5 UIController\<T\> 精简
+- [ ] 仅注入 `internal Action CloseAction`，不注入 Config
+- [ ] 删除 `CreateViewAsync()` / `LoadFromResources()` / `LoadFromCache()` / `InstantiateView()`
+- [ ] `OnInit()` 在 `SetView()` 之后调用
+
+### 5.6 UIView 移除反向引用
+- [ ] 删除 `public IUIController Controller` / `public UIContext Context` / `Internal_SetContext()`
+
+### 5.7 UIManager 只拆 2 子模块
+- [ ] 创建 `Manager/UIViewCache.cs`（Type 为键）
+- [ ] 创建 `Manager/UIControllerRegistry.cs`（Type 为键；AutoRegister；FindType 仅用于外部配置 string→Type）
+- [ ] 队列调度 / 层级栈管理 留在 UIManager 内（队列深度 1）
+
+### 5.8 View 加载权移交 UIManager
+- [ ] 删掉 `controller.CreateViewAsync()`，改为 UIManager 全权加载
+- [ ] 注入 `CloseAction` + `controller.SetView(view)`
+- [ ] `if (isFirstTime) controller.OnInit()` 在 SetView 之后
+
+### 5.9 Controller 工厂替代反射拼接
+- [ ] 删除 `UIManager.CreateController(string typeName)`
+- [ ] 改为 `UIControllerRegistry` 字典注册（Type 为键）
+
+### 5.10 UIItemConfig 瘦身
+- [ ] 删除 `UIItemConfig.UIKey`
+- [ ] `UIConfigLoader.Load()` 入口接收 `List<(string uiKey, UIItemConfig)>`，内部转换一次后以 Type 存储
+
+### 5.11 设计文档
+- [x] 更新 `design.md` 至 v12
+- [x] 更新架构图、模块说明、生命周期流程、目录结构
+- [x] 记录 v12 vs v11 变更对比表
+
+### 5.12 EditorWindow 适配
+- [ ] 适配 Type 键 API + `ctx.IsOpened` 替代 `StateMachine.CurrentState`
+
+---
+
+## 阶段 6：v15 — IAssetMgr 重命名 + 动画策略抽取
+
+### 6.1 资源加载重命名
+- [ ] `IUIResourceLoader.cs` → `Core/IAssetMgr.cs`
+- [ ] `UIResourceLoader.cs` → `Manager/AssetMgr.cs`
+- [ ] 全局替换所有引用
+
+### 6.2 动画策略接口
+- [ ] 创建 `Animation/IAnimationStrategy.cs`（`void Play(RectTransform, float, Action)`)
+- [ ] 创建 `Animation/IAnimationFactory.cs`（`IAnimationStrategy GetStrategy(UIAnimationType)`）
+
+### 6.3 动画策略类实现
+- [ ] 创建 `Animation/UIAnimationType.cs`（枚举，FadeEnter/Exit, ScaleEnter/Exit, SlideUp/Down Enter/Exit, BlackFade Enter/Exit, None）
+- [ ] 创建 `Animation/Strategies/FadeEnterStrategy.cs`
+- [ ] 创建 `Animation/Strategies/FadeExitStrategy.cs`
+- [ ] 创建 `Animation/Strategies/ScaleEnterStrategy.cs`
+- [ ] 创建 `Animation/Strategies/ScaleExitStrategy.cs`
+- [ ] 创建 `Animation/Strategies/SlideUpEnterStrategy.cs`
+- [ ] 创建 `Animation/Strategies/SlideUpExitStrategy.cs`
+- [ ] 创建 `Animation/Strategies/SlideDownEnterStrategy.cs`
+- [ ] 创建 `Animation/Strategies/SlideDownExitStrategy.cs`
+- [ ] 创建 `Animation/Strategies/BlackFadeEnterStrategy.cs`
+- [ ] 创建 `Animation/Strategies/BlackFadeExitStrategy.cs`
+- [ ] 创建 `Animation/Strategies/NoneStrategy.cs`
+
+### 6.4 默认工厂
+- [ ] 创建 `Animation/DefaultAnimationFactory.cs`（字典映射 枚举→策略实例）
+
+### 6.5 UIView 重构
+- [ ] 删除所有内置动画 Helper 方法（FadeEnter/Exit, ScaleEnter/Exit, SlideUp/Enter/Exit, SlideDown Enter/Exit, BlackFade Enter/Exit, Fade 私有方法, Scale 私有方法）
+- [ ] 新增 `internal IAnimationFactory AnimationFactory { get; set; }` 属性（默认 DefaultAnimationFactory）
+- [ ] `PlayEnterAnimation` / `PlayExitAnimation` 默认实现改为 `AnimationFactory.GetStrategy(type).Play(...)`
+- [ ] 删除 `UIAnimationType` 旧枚举（与 UIView 同文件），迁移到独立 `Animation/UIAnimationType.cs`
+
+### 6.6 UIManager 注入
+- [ ] 新增 `public void SetAnimationFactory(IAnimationFactory factory)` 方法
+- [ ] View 加载后注入 `AnimationFactory` 到 View
+
+### 6.7 设计文档
+- [x] 更新 `design.md` 至 v15
+- [x] 更新目录结构、架构图、动画系统章节
+- [x] 记录 v15 变更
