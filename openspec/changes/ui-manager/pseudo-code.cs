@@ -297,16 +297,11 @@ class UIPool
 }
 
 // --- 4c. UIManager（核心）--- 
-class UIManager
+class UIManager : Singleton<UIManager>
 {
-    // --- 单例 ---
-    static UIManager Instance
-
     // --- 内部组件 ---
     UIConfigLoader        ConfigLoader   // 配置加载器
     UIPool                Pool           // 对象池
-    UIRegistry            Registry       // 注册表
-    UIResourceLoader      ResourceLoader // 资源加载器（池 + 异步加载 + 实例化）
 
     // --- 私有状态 ---
     Dictionary<string, UIContext> _activeContexts   // 活跃 UI
@@ -605,17 +600,16 @@ class UIConfigLoader
 // 7. RESOURCE LOADER — 资源加载器
 // ============================================================
 
-class UIResourceLoader
+class UIResourceLoader : Singleton<UIResourceLoader>
 {
-    UIPool _pool
-
-    UIResourceLoader(UIPool pool)
+    // 对象池引用（通过 UIManager 单例获取）
+    UIPool Pool => UIManager.Instance.Pool
 
     // 异步加载 + 实例化 UI
     async UniTask<UIResourceLoadResult> LoadAsync(UIItemConfig config, CancellationToken ct)
     {
         // 1. 优先从池获取
-        go = _pool.Get(config.UIKey)
+        go = Pool.Get(config.UIKey)
         if go != null → return InstantiateUI(go, config)
 
         // 2. 异步加载 Prefab
