@@ -353,6 +353,13 @@ public class UIManager : Singleton<UIManager>
     // === 队列 ===
     private Queue<QueueItem> _queue = new();
 
+    // === 队列模式 ===
+    public enum QueueMode
+    {
+        WaitForAnimation,   // 等待上一个界面动画结束后打开
+        WaitForClose        // 等待上一个界面完全关闭后打开
+    }
+
     // === 工具 ===
     private IUIController GetTopMostUI()
     {
@@ -369,7 +376,7 @@ public class UIManager : Singleton<UIManager>
     // 9.2 Open<T>
     // ================================================================
 
-    public void Open<T>(object args = null) where T : IUIController
+    public void Open<T>(object args = null, QueueMode mode = QueueMode.WaitForAnimation) where T : IUIController
     {
         Type key = typeof(T);
         var topUI = GetTopMostUI();
@@ -382,11 +389,19 @@ public class UIManager : Singleton<UIManager>
             return;
         }
 
-        // 最顶层UI正在加载/动画中 → 入队等待
-        if (topUI != null && (topUI.IsLoading || topUI.IsInAnimation))
+        // 根据队列模式判断是否入队
+        if (topUI != null)
         {
-            _queue.Enqueue(new QueueItem { ControllerType = key, Args = args });
-            return;
+            if (mode == QueueMode.WaitForAnimation && (topUI.IsLoading || topUI.IsInAnimation))
+            {
+                _queue.Enqueue(new QueueItem { ControllerType = key, Args = args, Mode = mode });
+                return;
+            }
+            if (mode == QueueMode.WaitForClose && topUI.IsOpened)
+            {
+                _queue.Enqueue(new QueueItem { ControllerType = key, Args = args, Mode = mode });
+                return;
+            }
         }
 
         // 其他情况 → 直接执行
@@ -538,17 +553,15 @@ public class UIManager : Singleton<UIManager>
             foreach (var ctrl in stack)
             {
                 ctrl.TryTransition(UIState.Closed);
-                ctrl.OnDispose();
-                if (ctrl.View != null) Object.Destroy(ctrl.View.gameObject);
+                ctrl.OnHide();
+                if (ctrl.View != null)
+                {
+                    ctrl.View.gameObject.SetActive(false);
+                    _viewCache[ctrl.GetType()] = ctrl.View.gameObject;
+                }
             }
             stack.Clear();
         }
-
-        foreach (var go in _viewCache.Values)
-            if (go != null) Object.Destroy(go);
-        _viewCache.Clear();
-
-        UIControllerRegistry.Clear();
     }
 
     // ================================================================
@@ -611,10 +624,31 @@ public class UIManager : Singleton<UIManager>
 
     private void ProcessQueue()
     {
-        if (_queue.Count > 0)
+        if (_queue.Count == 0) return;
+
+        var next = _queue.Peek();
+        var topUI = GetTopMostUI();
+
+        // WaitForAnimation: 上一个动画结束即可执行（无顶层或顶层不在动画中）
+        if (next.Mode == QueueMode.WaitForAnimation)
         {
-            var next = _queue.Dequeue();
-            StartOpening(next.ControllerType, next.Args);
+            if (topUI == null || !topUI.IsInAnimation)
+            {
+                _queue.Dequeue();
+                StartOpening(next.ControllerType, next.Args);
+            }
+            return;
+        }
+
+        // WaitForClose: 必须等上一个完全关闭（无顶层UI）
+        if (next.Mode == QueueMode.WaitForClose)
+        {
+            if (topUI == null)
+            {
+                _queue.Dequeue();
+                StartOpening(next.ControllerType, next.Args);
+            }
+            return;
         }
     }
 
@@ -643,6 +677,7 @@ public class UIManager : Singleton<UIManager>
     {
         public Type ControllerType;
         public object Args;
+        public QueueMode Mode;
     }
 }
 ```
