@@ -48,7 +48,7 @@
 │  - (无框架引用)       │  - CloseSelf()             │
 │                      │  - (仅持有 CloseAction)     │
 ├──────────────────────┴───────────────────────────┤
-│  IAssetMgr  ·  IAnimationFactory  ·  UIConfigLoader              │
+│  AssetMgr (单例) · UIConfigLoader              │
 │  UIContext (internal) · UIItemConfig (DTO)         │
 │                                                    │
 │  内部全部以 Type 做键，无 string 中转                │
@@ -142,25 +142,20 @@ public class UIItemConfig
 
 **文件：** UIView/UIView.cs
 
-纯表现层。不持有 Controller 引用，不持有 Context 引用。动画能力通过组合 `IAnimationFactory` 获取，不在基类中实现。
+纯表现层。不持有 Controller 引用，不持有 Context 引用。动画能力通过静态类 `AnimationFactory` 调用，不在基类中持有任何动画相关引用。
 
 ```csharp
 public abstract class UIView : MonoBehaviour
 {
-    // === 框架注入 ===
-    internal IAnimationFactory AnimationFactory { get; set; } = new DefaultAnimationFactory();
-
     // === 子类重写 ===
     public virtual void PlayEnterAnimation(Action onComplete)
     {
-        AnimationFactory.GetStrategy(UIAnimationType.FadeEnter)
-            .Play((RectTransform)transform, 0.3f, onComplete);
+        AnimationFactory.PlayEnter(UIAnimationType.Fade, (RectTransform)transform, 0.3f, onComplete);
     }
 
     public virtual void PlayExitAnimation(Action onComplete)
     {
-        AnimationFactory.GetStrategy(UIAnimationType.FadeExit)
-            .Play((RectTransform)transform, 0.2f, onComplete);
+        AnimationFactory.PlayExit(UIAnimationType.Fade, (RectTransform)transform, 0.2f, onComplete);
     }
 
     // === 交互控制 ===
@@ -176,7 +171,7 @@ public abstract class UIView : MonoBehaviour
 | `SetInteractive(bool)` | CanvasGroup 级别 interactable + blocksRaycasts |
 | `IsInteractable` (bool 属性) | 框架设置的交互许可标记，业务层在按钮回调中自行判断 |
 
-子类 override `PlayEnterAnimation` / `PlayExitAnimation` 时，通过 `AnimationFactory.GetStrategy(UIAnimationType.xxx).Play(...)` 选择动画效果。动画策略枚举参见第十一节。
+子类 override `PlayEnterAnimation` / `PlayExitAnimation` 时，通过 `AnimationFactory.PlayEnter/PlayExit(UIAnimationType.xxx, ...)` 选择动画效果。
 
 ---
 
@@ -262,9 +257,6 @@ public class UIManager : Singleton<UIManager>
     public void CloseAll();
     public void ClearCache();
 
-    // 注入：替换全局动画工厂（默认 DefaultAnimationFactory）
-    public void SetAnimationFactory(IAnimationFactory factory);
-
     // 调试用
     public int ActiveCount { get; }
     public int CachedViewCount => _viewCache.Count;
@@ -333,25 +325,14 @@ Open<T>(args)：
 
 ---
 
-## 七、IAssetMgr 资源加载
-
-**文件：** Core/IAssetMgr.cs
-
-```csharp
-public interface IAssetMgr
-{
-    UniTask<GameObject> LoadPrefabAsync(string prefabPath);
-}
-```
-
-默认实现：
+## 七、AssetMgr 资源加载
 
 **文件：** Manager/AssetMgr.cs
 
 ```csharp
-public class AssetMgr : IAssetMgr
+public class AssetMgr : Singleton<AssetMgr>
 {
-    public async UniTask<GameObject> LoadPrefabAsync(string prefabPath)
+    public virtual async UniTask<GameObject> LoadPrefabAsync(string prefabPath)
     {
         var req = Resources.LoadAsync<GameObject>(prefabPath);
         await req.ToUniTask();
@@ -360,7 +341,8 @@ public class AssetMgr : IAssetMgr
 }
 ```
 
-切换 Addressables / AssetBundle 只需新建实现类替换注入。
+- 继承 `Singleton<AssetMgr>`，通过 `AssetMgr.Instance` 访问
+- `LoadPrefabAsync` 为 `virtual`，切换 Addressables / AssetBundle 时继承重写即可
 
 ## 八、UIConfigLoader 配置加载器
 
@@ -410,7 +392,7 @@ ExecuteOpen:
   3. _registry.GetOrCreate(key) → (controller, isFirstTime)
   4. View 加载：
      a. _viewCache.Get(key) → 有缓存 SetActive(true)
-     b. 无缓存 → IAssetMgr.LoadPrefabAsync(PrefabPath)
+     b. 无缓存 → AssetMgr.Instance.LoadPrefabAsync(PrefabPath)
      → Instantiate(prefab, UIRoot.GetLayer(Layer))
   5. 状态检查（仍 Loading？）
   6. controller.SetView(view)
@@ -459,115 +441,145 @@ CloseAll():
 
 ### 11.1 设计原则
 
-- UIView 不再内置动画实现，通过组合 `IAnimationFactory` 获取策略
-- 每个动画效果一个独立策略类，实现 `IAnimationStrategy` 接口
-- `IAnimationFactory` 根据 `UIAnimationType` 枚举返回对应策略实例
-- 默认实现 `DefaultAnimationFactory` 使用 `UniTask` + `Time.deltaTime` 驱动
-- 替换方式：实现新的工厂类（如 DOTween 动画工厂），注入到 UIView.AnimationFactory
+- UIView 不内置动画实现，通过静态类 `AnimationFactory` 调用
+- 每个动画效果一个策略类，同时包含 Enter 和 Exit 两个动作
+- 不做预注册，按枚举即时创建策略实例
+- 默认使用 `UniTask` + `Time.deltaTime` 驱动
+- 替换方式：继承重写策略类，或修改 `AnimationFactory` 的 switch 分支
 
-### 11.2 策略接口
+### 11.2 动画类型枚举
+
+**文件：** Animation/UIAnimationType.cs
+
+```csharp
+public enum UIAnimationType
+{
+    Fade,
+    Scale,
+    SlideUp,
+    SlideDown,
+    BlackFade,
+    None,
+}
+```
+
+### 11.3 策略接口
 
 **文件：** Animation/IAnimationStrategy.cs
 
 ```csharp
 public interface IAnimationStrategy
 {
-    void Play(RectTransform target, float duration, Action onComplete);
+    void Enter(RectTransform target, float duration, Action onComplete);
+    void Exit(RectTransform target, float duration, Action onComplete);
 }
 ```
 
-### 11.3 动画策略类
+### 11.4 静态工厂 AnimationFactory
 
-**目录：** `Animation/Strategies/`
-
-| 类 | 对应枚举 | 效果 |
-|----|---------|------|
-| `FadeEnterStrategy` | `FadeEnter` | 透明度 0→1 |
-| `FadeExitStrategy` | `FadeExit` | 透明度 1→0 |
-| `ScaleEnterStrategy` | `ScaleEnter` | 缩放 0→1.1→1（弹性） |
-| `ScaleExitStrategy` | `ScaleExit` | 缩放 1→0 |
-| `SlideUpEnterStrategy` | `SlideUpEnter` | 从下往上滑入 |
-| `SlideUpExitStrategy` | `SlideUpExit` | 往上滑出 |
-| `SlideDownEnterStrategy` | `SlideDownEnter` | 从上往下滑入 |
-| `SlideDownExitStrategy` | `SlideDownExit` | 往下滑出 |
-| `BlackFadeEnterStrategy` | `BlackFadeEnter` | 黑屏渐入 |
-| `BlackFadeExitStrategy` | `BlackFadeExit` | 黑屏渐出 |
-| `NoneStrategy` | `None` | 立即回调 |
-
-### 11.4 工厂接口
-
-**文件：** Animation/IAnimationFactory.cs
+**文件：** Animation/AnimationFactory.cs
 
 ```csharp
-public interface IAnimationFactory
+public static class AnimationFactory
 {
-    IAnimationStrategy GetStrategy(UIAnimationType type);
-}
-```
+    private static readonly Dictionary<UIAnimationType, IAnimationStrategy> _cache = new();
 
-### 11.5 默认工厂
-
-**文件：** Animation/DefaultAnimationFactory.cs
-
-```csharp
-public class DefaultAnimationFactory : IAnimationFactory
-{
-    private readonly Dictionary<UIAnimationType, IAnimationStrategy> _strategies = new()
+    public static void PlayEnter(UIAnimationType type, RectTransform target, float duration, Action onComplete)
     {
-        [UIAnimationType.FadeEnter]  = new FadeEnterStrategy(),
-        [UIAnimationType.FadeExit]   = new FadeExitStrategy(),
-        [UIAnimationType.ScaleEnter] = new ScaleEnterStrategy(),
-        // ...
-    };
+        GetStrategy(type).Enter(target, duration, onComplete);
+    }
 
-    public IAnimationStrategy GetStrategy(UIAnimationType type)
-        => _strategies.TryGetValue(type, out var s) ? s : _strategies[UIAnimationType.None];
-}
-```
-
-### 11.6 动画类型枚举
-
-```csharp
-public enum UIAnimationType
-{
-    FadeEnter,   FadeExit,
-    ScaleEnter,  ScaleExit,
-    SlideUpEnter,  SlideUpExit,
-    SlideDownEnter, SlideDownExit,
-    BlackFadeEnter, BlackFadeExit,
-    None,
-}
-```
-
-### 11.7 UIView 使用方式
-
-```csharp
-public class ShopView : UIView
-{
-    public override void PlayEnterAnimation(Action onComplete)
+    public static void PlayExit(UIAnimationType type, RectTransform target, float duration, Action onComplete)
     {
-        AnimationFactory.GetStrategy(UIAnimationType.ScaleEnter)
-            .Play((RectTransform)transform, 0.35f, onComplete);
+        GetStrategy(type).Exit(target, duration, onComplete);
+    }
+
+    private static IAnimationStrategy GetStrategy(UIAnimationType type)
+    {
+        if (!_cache.TryGetValue(type, out var strategy))
+        {
+            strategy = type switch
+            {
+                UIAnimationType.Fade      => new FadeStrategy(),
+                UIAnimationType.Scale     => new ScaleStrategy(),
+                UIAnimationType.SlideUp   => new SlideUpStrategy(),
+                UIAnimationType.SlideDown => new SlideDownStrategy(),
+                UIAnimationType.BlackFade => new BlackFadeStrategy(),
+                _                         => new NoneStrategy(),
+            };
+            _cache[type] = strategy;
+        }
+        return strategy;
     }
 }
 ```
 
-业务方替换为 DOTween 动画：
+### 11.5 动画策略类
+
+**目录：** `Animation/Strategies/`
+
+| 类 | 枚举 | Enter | Exit |
+|----|------|-------|------|
+| `FadeStrategy` | Fade | 透明度 0→1 | 透明度 1→0 |
+| `ScaleStrategy` | Scale | 0→1.1→1（弹性） | 1→0 |
+| `SlideUpStrategy` | SlideUp | 从下往上滑入 | 往上滑出 |
+| `SlideDownStrategy` | SlideDown | 从上往下滑入 | 往下滑出 |
+| `BlackFadeStrategy` | BlackFade | 黑屏渐入 | 黑屏渐出 |
+| `NoneStrategy` | None | 立即回调 | 立即回调 |
+
+示例策略实现：
 
 ```csharp
-public class DOTweenAnimationFactory : IAnimationFactory
+public class FadeStrategy : IAnimationStrategy
 {
-    public IAnimationStrategy GetStrategy(UIAnimationType type) => type switch
+    public async void Enter(RectTransform target, float duration, Action onComplete)
     {
-        UIAnimationType.FadeEnter  => new DOTweenFadeEnter(),
-        UIAnimationType.ScaleEnter => new DOTweenScaleEnter(),
-        // ...
-    };
-}
+        var cg = target.GetComponent<CanvasGroup>();
+        if (cg == null) { onComplete?.Invoke(); return; }
+        cg.alpha = 0f;
+        var elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            cg.alpha = Mathf.Lerp(0f, 1f, elapsed / duration);
+            await UniTask.Yield(PlayerLoopTiming.Update);
+        }
+        cg.alpha = 1f;
+        onComplete?.Invoke();
+    }
 
-// 注入
-UIManager.Instance.SetAnimationFactory(new DOTweenAnimationFactory());
+    public async void Exit(RectTransform target, float duration, Action onComplete)
+    {
+        var cg = target.GetComponent<CanvasGroup>();
+        if (cg == null) { onComplete?.Invoke(); return; }
+        cg.alpha = 1f;
+        var elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            cg.alpha = Mathf.Lerp(1f, 0f, elapsed / duration);
+            await UniTask.Yield(PlayerLoopTiming.Update);
+        }
+        cg.alpha = 0f;
+        onComplete?.Invoke();
+    }
+}
 ```
+
+### 11.6 使用方式
+
+```csharp
+// UIView 子类
+public class ShopView : UIView
+{
+    public override void PlayEnterAnimation(Action onComplete)
+    {
+        AnimationFactory.PlayEnter(UIAnimationType.Scale, (RectTransform)transform, 0.35f, onComplete);
+    }
+}
+```
+
+业务方自定义动画：继承 `ScaleStrategy` 重写 `Enter`/`Exit`，或修改 `AnimationFactory.GetStrategy` 的 switch 分支。
 
 ---
 
@@ -589,23 +601,16 @@ Assets/Scripts/UIFrameworkLib/
 │   ├── UIStateMachine.cs
 │   ├── UIItemConfig.cs
 │   ├── UIContext.cs              (internal)
-│   └── IAssetMgr.cs
 ├── Animation/
 │   ├── UIAnimationType.cs
 │   ├── IAnimationStrategy.cs
-│   ├── IAnimationFactory.cs
-│   ├── DefaultAnimationFactory.cs
+│   ├── AnimationFactory.cs         (静态入口)
 │   └── Strategies/
-│       ├── FadeEnterStrategy.cs
-│       ├── FadeExitStrategy.cs
-│       ├── ScaleEnterStrategy.cs
-│       ├── ScaleExitStrategy.cs
-│       ├── SlideUpEnterStrategy.cs
-│       ├── SlideUpExitStrategy.cs
-│       ├── SlideDownEnterStrategy.cs
-│       ├── SlideDownExitStrategy.cs
-│       ├── BlackFadeEnterStrategy.cs
-│       ├── BlackFadeExitStrategy.cs
+│       ├── FadeStrategy.cs
+│       ├── ScaleStrategy.cs
+│       ├── SlideUpStrategy.cs
+│       ├── SlideDownStrategy.cs
+│       ├── BlackFadeStrategy.cs
 │       └── NoneStrategy.cs
 ├── UIView/
 │   ├── UIView.cs
@@ -653,3 +658,6 @@ Assets/Scripts/UIFrameworkLib/
 | v13 | **UIView 交互控制简化：** 删除 `DisableAllSelectables()` / `RestoreSelectables()`（快照+禁用所有按钮），改为 `IsInteractable` bool 属性 + `SetInteractive(bool)` CanvasGroup 控制；业务层在按钮回调中自行根据 `IsInteractable` 判断是否响应 |
 | v14 | **删除 ShowMask/HideMask：** 遮罩是 Popup Prefab 内部视觉元素，由子类在 `PlayEnterAnimation/PlayExitAnimation` 中自行处理 |
 | v15 | **IAssetMgr 重命名 + 动画策略类抽取：** `IUIResourceLoader` → `IAssetMgr`，`UIResourceLoader` → `AssetMgr`；动画能力从 UIView 内置 Helper 抽为独立策略类（`IAnimationStrategy`）+ 工厂（`IAnimationFactory`），UIView 改为组合获取 |
+| v16 | **动画工厂改为静态：** `IAnimationFactory` / `DefaultAnimationFactory` 删除；新增静态类 `UIAnimation`（`Play()` + `SetProvider()`）；UIView 不再持有 `AnimationFactory` 属性，`UIManager` 不再有 `SetAnimationFactory()` |
+| v17 | **删除 IAssetMgr 接口：** `AssetMgr` 直接继承 `Singleton<AssetMgr>`，`LoadPrefabAsync` 改为 `virtual`；删除 `Core/IAssetMgr.cs` |
+| v18 | **AnimationFactory 重构：** `UIAnimation` 改名 `AnimationFactory`，`Play` 拆为 `PlayEnter`/`PlayExit`；策略类合并（FadeEnter+Exit→FadeStrategy），Enter/Exit 合入一个策略类；枚举精简（FadeEnter/Exit → Fade）；不做预注册字典，按枚举即时 new |
