@@ -1,3 +1,4 @@
+using AtomString.Operator;
 using UnityEngine;
 
 namespace UIFrameworkLib
@@ -12,6 +13,8 @@ namespace UIFrameworkLib
 		//public abstract int GetEnterAnimationDurationMs();
 		//public abstract int GetExitAnimationDurationMs();
 		//public bool IsInteractable { get; internal set; }
-		public Operation
+		public IOperate _OnShow;
+		public IOperate _OnHide;
+		public bool IsInteractable { get; internal set; }
 	}
 }

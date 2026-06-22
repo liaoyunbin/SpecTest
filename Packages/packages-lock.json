@@ -1,5 +1,12 @@
 {
   "dependencies": {
+    "com.atomstring.lib": {
+      "version": "http://192.168.8.104:3300/TechTeam/AtomString.Lib.git#v0.0.5",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {},
+      "hash": "d8a5b2a27cd8d54c6810ed7c4b68491c91001645"
+    },
     "com.cysharp.unitask": {
       "version": "https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask",
       "depth": 0,

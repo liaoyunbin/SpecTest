@@ -1,14 +1,6 @@
 namespace UIFrameworkLib
 {
 
-	public enum UIControllerState
-	{
-		AnimationEnter,
-		Opened,
-		AnimationExit,
-		Disable,
-	}
-
 	/// <summary>
 	/// UI 控制器关闭表现
 	/// </summary>

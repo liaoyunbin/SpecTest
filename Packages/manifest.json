@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "com.atomstring.lib": "http://192.168.8.104:3300/TechTeam/AtomString.Lib.git#v0.0.5",
     "com.cysharp.unitask": "https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask",
     "com.unity.collab-proxy": "2.7.1",
     "com.unity.feature.development": "1.0.1",

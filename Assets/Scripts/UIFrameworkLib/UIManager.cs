@@ -64,7 +64,10 @@ namespace UIFrameworkLib
 			}
 			//处理对应入栈
 			ctrl.View.gameObject.SetActive(true);
-			ctrl.DoShow(arg);
+
+			//等待上一个退出动画结束后再播放
+			//ctrl.DoShow(arg);
+			ctrl.View._OnShow?.Reset();
 		}
 
 		public void Close<T>(UIControllerClosePerformance closeState) where T : UIController
@@ -76,19 +79,24 @@ namespace UIFrameworkLib
 			}
 			else
 			{
-				//当前是不是要过渡效果之类的来决定
-				switch(ctrl.State)
+				if (closeState == UIControllerClosePerformance.ExitAnimation)
 				{
-					case UIControllerState.AnimationEnter:
-						break;
-					case UIControllerState.Opened:
-						break;
-					case UIControllerState.AnimationExit:
-						break;
-					case UIControllerState.Disable: //不做任何
-						break;
+					//todo:进入动画中止。 还没播放退出动画则进行下播放。
+					ctrl.View._OnShow?.Stop();
+					if (ctrl.View._OnHide != null)
+					{
+						switch (ctrl.View._OnHide.Status)
+						{
+							case AtomString.Operator.ProcessStatus.None:
+								ctrl.View._OnHide?.Reset();
+								break;
+						}
+					}
+				}else if(closeState == UIControllerClosePerformance.Immediate)
+				{
+					ctrl.View._OnShow?.Stop();
+					//todo:后续是不是执行finish之类的
 				}
-				ctrl.DoHide(closeState);
 			}
 		}
 

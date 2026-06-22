@@ -2,7 +2,8 @@
     "name": "UIFrameworkLib",
     "rootNamespace": "UIFrameworkLib",
     "references": [
-        "UniTask"
+        "UniTask",
+        "AtomString.Lib"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
