@@ -15,6 +15,34 @@ namespace UIFrameworkLib
 		//public void Back();
 
 		private readonly Dictionary<UILayer, Stack<UIController>> _stacks = new();
+		private void PushToStack(UIController controller)
+		{
+			var layer = controller.Layer;
+			if (!_stacks.TryGetValue(layer, out var stack))
+			{
+				stack = new Stack<UIController>();
+				_stacks[layer] = stack;
+			}
+			stack.Push(controller);
+		}
+		private void PopFromStack(UIController controller)
+		{
+			if (_stacks.TryGetValue(controller.Layer, out var stack) && stack.Count > 0)
+			{
+				// 临时栈用于重建（Stack 不支持直接 Remove 指定元素）
+				var temp = new Stack<UIController>();
+				while (stack.Count > 0)
+				{
+					var top = stack.Pop();
+					if (top != controller)
+						temp.Push(top);
+				}
+				// 恢复顺序
+				while (temp.Count > 0)
+					stack.Push(temp.Pop());
+			}
+		}
+
 		private UIController FindController<T>() where T : UIController
 		{
 			return UIControllerRegistry.GetController(typeof(T));

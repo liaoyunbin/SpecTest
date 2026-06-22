@@ -14,5 +14,8 @@ namespace UIFrameworkLib
 		//public void OpenUI<T>(object arg) where T : UIController;
 		//public void Close<T>();
 		//public void Back();
+
+		public Queue EnterQueue;
+		public Queue ExitQueue;
 	}
 }
